@@ -47,6 +47,10 @@ def main():
                 help='A query to select bounds from a file (default: %(default)s)'
             )
             subparser.add_argument(
+                '--epsg', dest='epsg',
+                help='An EPSG code to transform the data to (default: %(default)s)', type=int
+            )
+            subparser.add_argument(
                 '-cc', '--cloud-cover', dest='cloud_cover_perc',
                 help='The maximum percentage cloud cover (default: %(default)s)',
                 default=90, type=int
