@@ -12,8 +12,8 @@ from .stac_utils import (
     NODOWNLOAD
 )
 
-import geowombat as gw
-from geowombat.ml.transformers import Stackerizer
+from geowombat.core.stac import open_stac
+# from geowombat.ml.transformers import Stackerizer
 
 import pandas as pd
 from rasterio.enums import Resampling
@@ -210,7 +210,7 @@ def write_time_stack(
 def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
     """Downloads Landsat data
     """
-    data, df = gw.open_stac(
+    data, df = open_stac(
         stac_catalog=landsat_params.stac_catalog,
         bounds=params.bounds,
         collection=landsat_params.collection,
@@ -256,7 +256,7 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
 def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
     """Downloads Sentinel-2 data
     """
-    data, df = gw.open_stac(
+    data, df = open_stac(
         stac_catalog=sentinel2_params.stac_catalog,
         bounds=params.bounds,
         collection=sentinel2_params.collection,
