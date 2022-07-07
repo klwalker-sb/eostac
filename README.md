@@ -2,12 +2,28 @@
 
 ### Download a time series of Landsat and Sentinel-2 data
 
+#### Use a single file for the search bounding box
+
 ```python
 eostac download \
     --start-date 2020-01-01 \
     --end-date 2021-01-01 \
     --out-path /downloads \
     --bounds bounds.geojson \
+    --cloud-cover 90 \
+    --threads 8 \
+    --max-items -1
+```
+
+#### Use a feature row within the geometry file for the search bounding box
+
+```python
+eostac download \
+    --start-date 2020-01-01 \
+    --end-date 2021-01-01 \
+    --out-path /downloads \
+    --bounds bounds.geojson \
+    --bounds-query 'grid==1' \
     --cloud-cover 90 \
     --threads 8 \
     --max-items -1
