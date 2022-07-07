@@ -1,9 +1,9 @@
 import argparse
 import enum
 
-from eostac.scripts.stac_downloader import download_data
-from eostac.scripts.stac_post import load_data, FileFormat
-from eostac.scripts.stac_adjust import adjust_data
+from ..stac_downloader import download_data
+from ..stac_post import load_data, FileFormat
+from ..stac_adjust import adjust_data
 
 
 class Processes(enum.Enum):
