@@ -8,7 +8,7 @@ from ..stac_adjust import adjust_data
 
 class Processes(enum.Enum):
     download = 'download'
-    post = 'post'
+    brdf = 'brdf'
     adjust = 'adjust'
 
 
@@ -74,7 +74,7 @@ def main():
                 help='The position of the extra progress bar (default: %(default)s)',
                 type=int, default=1
             )
-        elif process == Processes.post:
+        elif process == Processes.brdf:
             subparser.add_argument(
                 '-p', '--project-path', dest='project_path', help='The input project path (default: %(default)s)'
             )
@@ -122,7 +122,7 @@ def main():
 
     if args.process == Processes.download.value:
         download_data(args)
-    elif args.process == Processes.post.value:
+    elif args.process == Processes.brdf.value:
         load_data(args)
     elif args.process == Processes.adjust.value:
         adjust_data(args)

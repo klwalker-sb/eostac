@@ -71,7 +71,7 @@ def adjust_data(args):
             for row in tqdm(df.itertuples(), total=len(df.index), position=0, desc='Sample'):
                 id_path = str(Path(args.out_path) / f"{row.unique_id:06d}")
                 for start_date, end_date in dates:
-                    com = "python stac_downloader.py " \
+                    com = "eostac download " \
                           f"--start-date {start_date} " \
                           f"--end-date {end_date} " \
                           f"--out-path {id_path} " \
@@ -88,7 +88,7 @@ def adjust_data(args):
     else:
         for row in tqdm(df.itertuples(), total=len(df.index), position=0, desc='Sample'):
             id_path = str(Path(args.out_path) / f"{row.unique_id:06d}")
-            com = "python stac_post.py " \
+            com = "eostac brdf " \
                   f"--project-path {id_path} " \
                   "--get-coeffs"
 
