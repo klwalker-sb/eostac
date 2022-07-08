@@ -29,6 +29,23 @@ eostac download \
     --max-items -1
 ```
 
+#### Download 4 scenes in parallel, with 4 concurrent threads per band/chunk
+
+> NOTE: this example would require 16 cores
+
+```python
+eostac download \
+    --start-date 2020-01-01 \
+    --end-date 2021-01-01 \
+    --out-path /downloads \
+    --bounds bounds.geojson \
+    --bounds-query 'grid==1' \
+    --cloud-cover 90 \
+    --workers 4 \
+    --threads 4 \
+    --max-items -1
+```
+
 ### Adjust for sensor radiometric differences
 
 #### Download data
