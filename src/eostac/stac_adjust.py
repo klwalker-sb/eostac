@@ -3,10 +3,9 @@ import tempfile
 from pathlib import Path
 
 from geosample import QuadTree
-
 import numpy as np
 import geopandas as gpd
-from shapely.geometry import Polygon
+from shapely.geometry import box, Polygon
 from tqdm.auto import tqdm
 
 
@@ -16,15 +15,7 @@ def create_polygon(x: float, y: float, dist: float) -> Polygon:
     bottom = y - dist
     top = y + dist
 
-    return Polygon(
-        [
-            (left, bottom),
-            (left, top),
-            (right, top),
-            (right, bottom),
-            (left, bottom)
-        ]
-    )
+    return box(left, bottom, right, top)
 
 
 def adjust_data(args):
@@ -77,9 +68,10 @@ def adjust_data(args):
                           f"--out-path {id_path} " \
                           f"--bounds {points_file} " \
                           f"--bounds-query 'unique_id=={row.unique_id}' " \
+                          f"--epsg {args.epsg} " \
                           "--cloud-cover 5 " \
-                          "--workers 1 " \
-                          "--threads 8 " \
+                          f"--workers {args.workers} " \
+                          f"--threads {args.threads} " \
                           "--max-items -1 " \
                           "--tqdm-item-position 1 " \
                           "--tqdm-extra-position 2"

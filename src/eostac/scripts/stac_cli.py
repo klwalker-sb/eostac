@@ -99,6 +99,10 @@ def main():
             )
         elif process == Processes.adjust:
             subparser.add_argument(
+                '--epsg', dest='epsg',
+                help='An EPSG code to transform the data to (default: %(default)s)', type=int
+            )
+            subparser.add_argument(
                 '-g', '--geometry', dest='geometry', help='The geometry (default: %(default)s)'
             )
             subparser.add_argument(

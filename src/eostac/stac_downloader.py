@@ -2,6 +2,7 @@ from pathlib import Path
 import enum
 import typing as T
 from abc import ABC
+import concurrent.futures
 
 from .stac_utils import (
     LandsatBands,
@@ -27,7 +28,7 @@ from tqdm.auto import tqdm
 class Parameters(object):
     """General parameters
     """
-    bounds: T.Union[str, Path] = attr.ib(default=None)
+    bounds: T.Union[str, Path, T.Sequence[float]] = attr.ib(default=None)
     out_path: Path = attr.ib(default=None, converter=Path)
     start_date: str = attr.ib(default=None)
     end_date: str = attr.ib(default=None)
@@ -172,6 +173,35 @@ def s2_l1c_clouds(data: xr.DataArray):
     ).fit_transform(data_cloudless)
 
 
+def write_stack(
+    row_id: str,
+    data: xr.DataArray,
+    out_path: Path,
+    n_workers: int,
+    threads_per_worker: int,
+    tqdm_extra_position: int
+):
+    out_name = out_path / f"{row_id}.tif"
+    if not out_name.is_file():
+        # Index by scene id because it is always unique
+        scene_idx = data.scene_ids.index(row_id)
+        (
+            data
+            .assign_coords(time=pd.DatetimeIndex(data.time.values).round('D'))
+            .isel(time=scene_idx)
+            .squeeze()
+            .transpose('band', 'y', 'x')
+            .gw.to_raster(
+                out_name,
+                n_workers=n_workers,
+                n_threads=threads_per_worker,
+                compress='lzw',
+                overwrite=True,
+                tqdm_kwargs={'position': tqdm_extra_position + 2, 'desc': 'Chunks'}
+            )
+        )
+
+
 def write_time_stack(
     data: xr.DataArray,
     out_path: Path,
@@ -182,30 +212,39 @@ def write_time_stack(
 ) -> None:
     """Writes each DataArray time step to file
     """
-    for row in tqdm(
-        df.sort_values('date').itertuples(),
-        position=tqdm_extra_position+1,
-        desc='Scene id'
-    ):
-        out_name = out_path / f"{row.id}.tif"
-        if not out_name.is_file():
-            # Index by scene id because it is always unique
-            scene_idx = data.scene_ids.index(row.id)
-            (
-                data
-                .assign_coords(time=pd.DatetimeIndex(data.time.values).round('D'))
-                .isel(time=scene_idx)
-                .squeeze()
-                .transpose('band', 'y', 'x')
-                .gw.to_raster(
-                    out_name,
-                    n_workers=n_workers,
-                    n_threads=threads_per_worker,
-                    compress='lzw',
-                    overwrite=True,
-                    tqdm_kwargs={'position': tqdm_extra_position+2, 'desc': 'Chunks'}
-                )
+    if n_workers == 1:
+        for row in tqdm(
+            df.sort_values('date').itertuples(),
+            position=tqdm_extra_position+1,
+            desc='Scene id'
+        ):
+            write_stack(
+                row.id,
+                data,
+                out_path,
+                1,
+                threads_per_worker,
+                tqdm_extra_position
             )
+    else:
+        data_gen = ((
+            row.id,
+            data,
+            out_path,
+            1,
+            threads_per_worker,
+            tqdm_extra_position
+        ) for row in df.sort_values('date').itertuples())
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = [executor.submit(write_stack, *args) for args in data_gen]
+            for f in tqdm(
+                concurrent.futures.as_completed(futures),
+                total=len(df.index),
+                position=tqdm_extra_position+1,
+                desc='Scene id'
+            ):
+                f.result()
 
 
 def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
