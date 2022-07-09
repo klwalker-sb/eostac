@@ -33,7 +33,7 @@ class Parameters(object):
     start_date: str = attr.ib(default=None)
     end_date: str = attr.ib(default=None)
     bounds_query: str = attr.ib(default=None)
-    epsg: int = attr.ib(default=None)
+    epsg: T.Union[int, None] = attr.ib(default=None)
     resolution: float = attr.ib(default=10, converter=float)
     chunksize: int = attr.ib(default=512, converter=int)
     cloud_cover_perc: int = attr.ib(default=90)
@@ -52,7 +52,7 @@ class SensorParams(ABC):
     collection: str
     stac_catalog: str
     mask_data: bool
-    epsg: int
+    epsg: T.Union[int, None]
     resolution: T.Union[float, int]
     resampling: Resampling
     extra_assets: T.List[str]
@@ -75,7 +75,7 @@ class LandsatParams(SensorParams):
     collection: str = attr.ib(default='landsat_c2_l2')
     stac_catalog: str = attr.ib(default='microsoft')
     mask_data: bool = attr.ib(default=True)
-    epsg: int = attr.ib(default=None)
+    epsg: T.Union[int, None] = attr.ib(default=None)
     resolution: T.Union[float, int] = attr.ib(default=10.0)
     resampling: Resampling = attr.ib(default=Resampling.cubic)
     extra_assets: T.List[str] = attr.ib(default=['ang', 'mtl.txt', 'mtl.xml'])
@@ -101,7 +101,7 @@ class Sentinel2Params(SensorParams):
     collection: str = attr.ib(default='sentinel_s2_l2a')
     stac_catalog: str = attr.ib(default='element84')
     mask_data: bool = attr.ib(default=False)
-    epsg: int = attr.ib(default=None)
+    epsg: T.Union[int, None] = attr.ib(default=None)
     resolution: T.Union[float, int] = attr.ib(default=10.0)
     resampling: Resampling = attr.ib(default=Resampling.cubic)
     extra_assets: T.List[str] = attr.ib(default=['metadata'])

@@ -52,7 +52,7 @@ def main():
             )
             subparser.add_argument(
                 '--epsg', dest='epsg',
-                help='An EPSG code to transform the data to (default: %(default)s)', type=int
+                help='An EPSG code to transform the data to (default: %(default)s)', default=None
             )
             subparser.add_argument(
                 '-cc', '--cloud-cover', dest='cloud_cover_perc',

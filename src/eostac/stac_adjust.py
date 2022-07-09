@@ -73,7 +73,6 @@ def adjust_data(args):
                           f"--out-path {id_path} " \
                           f"--bounds {points_file} " \
                           f"--bounds-query '{UniqueIdentifers.unique_id.value}=={row.unique_id}' " \
-                          f"--epsg {args.epsg} " \
                           f"--resolution {args.resolution} " \
                           "--cloud-cover 5 " \
                           f"--workers {args.workers} " \
@@ -81,6 +80,9 @@ def adjust_data(args):
                           "--max-items -1 " \
                           "--tqdm-item-position 1 " \
                           "--tqdm-extra-position 2"
+
+                    if args.epsg is not None:
+                        com += f" --epsg {args.epsg}"
 
                     subprocess.call(com, shell=True)
     else:
