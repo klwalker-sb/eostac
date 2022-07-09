@@ -34,6 +34,7 @@ class Parameters(object):
     end_date: str = attr.ib(default=None)
     bounds_query: str = attr.ib(default=None)
     epsg: int = attr.ib(default=None)
+    resolution: float = attr.ib(default=10, converter=float)
     chunksize: int = attr.ib(default=512, converter=int)
     cloud_cover_perc: int = attr.ib(default=90)
     n_workers: int = attr.ib(default=1, converter=int)
@@ -354,6 +355,7 @@ def download_data(args):
         end_date=args.end_date,
         bounds_query=args.bounds_query,
         epsg=args.epsg,
+        resolution=args.resolution,
         cloud_cover_perc=args.cloud_cover_perc,
         chunksize=args.chunksize,
         n_workers=args.workers,
@@ -366,7 +368,8 @@ def download_data(args):
     # Download Landsat
     landsat_params = LandsatParams(
         out_path=SensorPaths(out_path=params.out_path).landsat,
-        epsg=params.epsg
+        epsg=params.epsg,
+        resolution=params.resolution
     )
     epsg = download_landsat(params, landsat_params)
 
@@ -374,6 +377,7 @@ def download_data(args):
         # Download Sentinel-2
         sentinel2_params = Sentinel2Params(
             out_path=SensorPaths(out_path=params.out_path).sentinel2,
-            epsg=epsg
+            epsg=epsg,
+            resolution=params.resolution
         )
         download_sentinel2(params, sentinel2_params)
