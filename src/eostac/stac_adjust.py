@@ -1,12 +1,17 @@
 import subprocess
 import tempfile
 from pathlib import Path
+import enum
 
 from geosample import QuadTree
 import numpy as np
 import geopandas as gpd
 from shapely.geometry import box, Polygon
 from tqdm.auto import tqdm
+
+
+class UniqueIdentifers(enum.Enum):
+    unique_id = 'unique_id'
 
 
 def create_polygon(x: float, y: float, dist: float) -> Polygon:
@@ -41,7 +46,7 @@ def adjust_data(args):
         crs=points.crs
     )
     df = df.to_crs('epsg:4326')
-    df = df.assign(unique_id=range(len(df.index)))
+    df = df.assign(**{UniqueIdentifers.unique_id.value: range(len(df.index))})
     # Create polygon bounding boxes around the points
     df = df.assign(geometry=[create_polygon(geom.x, geom.y, args.dist) for geom in df.geometry])
     if args.freq is None:
@@ -60,15 +65,16 @@ def adjust_data(args):
             points_file = Path(tmp) / 'points.gpkg'
             df.to_file(points_file)
             for row in tqdm(df.itertuples(), total=len(df.index), position=0, desc='Sample'):
-                id_path = str(Path(args.out_path) / f"{row.unique_id:06d}")
+                id_path = str(Path(args.out_path) / f"{getattr(row, UniqueIdentifers.unique_id.value):06d}")
                 for start_date, end_date in dates:
                     com = "eostac download " \
                           f"--start-date {start_date} " \
                           f"--end-date {end_date} " \
                           f"--out-path {id_path} " \
                           f"--bounds {points_file} " \
-                          f"--bounds-query 'unique_id=={row.unique_id}' " \
+                          f"--bounds-query '{UniqueIdentifers.unique_id.value}=={row.unique_id}' " \
                           f"--epsg {args.epsg} " \
+                          f"--resolution {args.resolution} " \
                           "--cloud-cover 5 " \
                           f"--workers {args.workers} " \
                           f"--threads {args.threads} " \
