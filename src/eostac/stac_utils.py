@@ -1,6 +1,7 @@
 import enum
 from pathlib import Path
 import typing as T
+import fnmatch
 
 import numpy as np
 import pandas as pd
@@ -17,17 +18,58 @@ UP_SCALE = 1e-4
 NODOWNLOAD = -999
 
 
-def plot_scatter(X: np.ndarray, y: np.ndarray, scale_factor: float, show: bool = True):
+class LandsatBands(enum.Enum):
+    coastal = 'coastal'
+    blue = 'blue'
+    green = 'green'
+    red = 'red'
+    nir = 'nir08'
+    swir1 = 'swir16'
+    swir2 = 'swir22'
+    qa = 'qa_pixel'
+
+
+class Sentinel2Bands(enum.Enum):
+    coastal = 'B01'
+    blue = 'B02'
+    green = 'B03'
+    red = 'B04'
+    nir1 = 'B05'
+    nir2 = 'B06'
+    nir3 = 'B07'
+    nir = 'B08'
+    rededge = 'B8A'
+    water = 'B09'
+    cirrus = 'B10'
+    swir1 = 'B11'
+    swir2 = 'B12'
+    scl = 'SCL'
+
+
+def get_lin_coefficients(
+    X: np.ndarray,
+    y: np.ndarray,
+    scale_factor: float,
+    plot_title: str,
+    show_plot: bool = False
+):
     sns.set_style('whitegrid')
     fig, axes = plt.subplots(2, 3, figsize=(8, 4), dpi=100, sharex=True, sharey=True)
     axes = axes.flatten()
     sns.despine(fig=fig)
 
-    titles = ['blue', 'green', 'red', 'NIR', 'SWIR1', 'SWIR2']
+    band_names = [
+        LandsatBands('blue').name,
+        LandsatBands('green').name,
+        LandsatBands('red').name,
+        LandsatBands('nir08').name,
+        LandsatBands('swir16').name,
+        LandsatBands('swir22').name
+    ]
     colors = ['blue', 'green', 'red', 'darkred', 'orange', 'purple']
 
     coeffs = {}
-    for band_x, band_y, ax, title, color, in zip(X, y, axes, titles, colors):
+    for band_x, band_y, ax, title, color, in zip(X, y, axes, band_names, colors):
         xsite = band_x.flatten().astype('float32')
         ysite = band_y.flatten().astype('float32')
         idx = np.where(
@@ -39,8 +81,6 @@ def plot_scatter(X: np.ndarray, y: np.ndarray, scale_factor: float, show: bool =
         )
         xsite = xsite[idx] * scale_factor
         ysite = ysite[idx] * scale_factor
-        # xsite = np.log10((xsite[idx] * scale_factor) * DOWN_SCALE)
-        # ysite = np.log10((ysite[idx] * scale_factor) * DOWN_SCALE)
 
         reg = LinearRegression(n_jobs=-1).fit(
             xsite[:, None],
@@ -49,47 +89,69 @@ def plot_scatter(X: np.ndarray, y: np.ndarray, scale_factor: float, show: bool =
 
         # yhat = X*beta + alpha
         yhat = xsite*float(reg.coef_) + float(reg.intercept_)
-        # inverse log10
-        # yhat = 10**yhat
-        # scale back to [0,1]
-        # yhat *= UP_SCALE
 
-        ax.scatter(
-            yhat,
-            ysite, #(10**ysite)*UP_SCALE,
-            s=10,
-            c=color,
-            ec='white',
-            lw=0.1,
-            alpha=0.5
-        )
-        # ax.hexbin(
-        #     yhat,
-        #     (10 ** ysite) * UP_SCALE,
-        #     gridsize=10,
-        #     cmap='plasma'
-        # )
-        ax.plot(
-            [0, 1],
-            [0, 1],
-            color='grey',
-            lw=1,
-            ls='-',
-            solid_capstyle='round'
-        )
-        ax.set_title(title)
-        ax.set_xlim(0, 0.55)
-        ax.set_ylim(0, 0.55)
+        if show_plot:
+            ax.scatter(
+                xsite,
+                ysite,
+                s=10,
+                c='k',
+                ec='none',
+                alpha=0.5
+            )
+            ax.scatter(
+                yhat,
+                ysite,
+                s=10,
+                c=color,
+                ec='white',
+                lw=0.1,
+                alpha=0.5
+            )
+            # ax.hexbin(
+            #     yhat,
+            #     (10 ** ysite) * UP_SCALE,
+            #     gridsize=10,
+            #     cmap='plasma'
+            # )
+            ax.plot(
+                [0, 1],
+                [0, 1],
+                color='grey',
+                lw=1,
+                ls='-',
+                solid_capstyle='round'
+            )
+            ax.set_title(title)
+            plt.suptitle(plot_title)
+            ax.set_xlim(0, 0.55)
+            ax.set_ylim(0, 0.55)
 
         coeffs[title] = {
             'slope': float(reg.coef_),
             'intercept': float(reg.intercept_)
         }
 
-    if show:
+    if show_plot:
         plt.show()
 
     return coeffs
+
+
+class SensorNames(enum.Enum):
+    landsat5 = 'lt05'
+    landsat7 = 'le07'
+    landsat8 = 'lc08'
+    landsat9 = 'lc09'
+    sentinel2 = 's2a'
+
+
+def get_landsat_sensor_name(sensor_id: str):
+    for sensor_name in SensorNames:
+        if fnmatch.fnmatch(sensor_id.lower(), f'{sensor_name.value}*'):
+            return sensor_name.value
+
+    return None
 
 
 def save_dict(data_file: T.Union[str, Path], data: dict):
@@ -165,34 +227,6 @@ class SensorPaths(object):
         self.mkdir(s2path)
 
         return s2path
-
-
-class LandsatBands(enum.Enum):
-    coastal = 'coastal'
-    blue = 'blue'
-    green = 'green'
-    red = 'red'
-    nir = 'nir08'
-    swir1 = 'swir16'
-    swir2 = 'swir22'
-    qa = 'qa_pixel'
-
-
-class Sentinel2Bands(enum.Enum):
-    coastal = 'B01'
-    blue = 'B02'
-    green = 'B03'
-    red = 'B04'
-    nir1 = 'B05'
-    nir2 = 'B06'
-    nir3 = 'B07'
-    nir = 'B08'
-    rededge = 'B8A'
-    water = 'B09'
-    cirrus = 'B10'
-    swir1 = 'B11'
-    swir2 = 'B12'
-    scl = 'SCL'
 
 
 def pickle_scene_info(df: pd.DataFrame, date_pos: int, scene_info: Path):
