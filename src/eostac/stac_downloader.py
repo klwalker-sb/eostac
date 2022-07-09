@@ -263,6 +263,7 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
         bounds_query=params.bounds_query,
         mask_data=landsat_params.mask_data,
         resolution=landsat_params.resolution,
+        epsg=landsat_params.epsg,
         view_asset_keys=params.view_asset_keys,
         resampling=landsat_params.resampling,
         extra_assets=landsat_params.extra_assets,
