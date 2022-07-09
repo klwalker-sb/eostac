@@ -52,28 +52,30 @@ eostac download \
 
 ```python
 eostac adjust \
-    --start-date 2020-01-01 \
-    --end-date 2020-14-01 \
+    --start-date 2013-01-01 \
+    --end-date 2013-14-01 \
     --out-path /coefficients \
-    --geometry /paraguay.zip \
-    --n-samples 20 \
+    --geometry /PRY_adm.zip \
+    --n-samples 10 \
     --freq Y \
-    --freq-repeat 10 \
+    --freq-repeat 9 \
     --threads 8 \
+    --epsg 8858
 ```
 
 #### Get linear coefficients
 
 ```python
 eostac adjust \
-    --start-date 2020-01-01 \
-    --end-date 2020-14-01 \
+    --start-date 2013-01-01 \
+    --end-date 2013-14-01 \
     --out-path /coefficients \
-    --geometry /paraguay.zip \
-    --n-samples 20 \
+    --geometry /PRY_adm.zip \
+    --n-samples 10 \
     --freq Y \
-    --freq-repeat 10 \
+    --freq-repeat 9 \
     --threads 8 \
+    --epsg 8858 \
     --regress
 ```
 
