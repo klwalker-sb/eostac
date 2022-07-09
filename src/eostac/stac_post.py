@@ -1,4 +1,3 @@
-import argparse
 from pathlib import Path
 import tempfile
 from collections import namedtuple
@@ -8,17 +7,20 @@ import typing as T
 import warnings
 
 from .stac_downloader import NODATA
-from .stac_downloader import LandsatBands, Sentinel2Bands
 from .stac_downloader import LandsatParams, Sentinel2Params
 from .stac_utils import (
     SensorPaths,
+    SensorNames,
+    get_landsat_sensor_name,
     save_array,
     load_array,
     save_dict,
     load_dict,
-    plot_scatter,
+    get_lin_coefficients,
     DOWN_SCALE,
-    UP_SCALE
+    UP_SCALE,
+    LandsatBands,
+    Sentinel2Bands
 )
 
 import geowombat as gw
@@ -87,7 +89,8 @@ IO_PARAMETERS = {
         'extension': '.tif',
         'kwargs': {
             'compress': 'lzw',
-            'overwrite': True
+            'overwrite': True,
+            'tqdm_kwargs': {}
         }
     },
     FileFormat.netcdf: {
@@ -113,6 +116,7 @@ class Parameters(object):
     subsample: int = attr.ib(default=10)
     resampling: str = attr.ib(default='bilinear')
     apply_bandpass: bool = attr.ib(default=False)
+    coeffs_path: T.Union[str, Path, None] = attr.ib(default=None)
     return_data: bool = attr.ib(default=False)
     n_workers: int = attr.ib(default=1, converter=int)
     threads_per_worker: int = attr.ib(default=1, converter=int)
@@ -179,6 +183,33 @@ class Data:
     sentinel2_files: T.Sequence[str]
     sentinel2_dates: T.Sequence[object]
     sentinel2_df: pd.DataFrame
+
+
+def apply_bandpass(coeffs: dict, data: xr.DataArray) -> xr.DataArray:
+    """Applies a band-pass calibration adjustment
+    """
+    attrs = data.attrs.copy()
+    alphas = np.array(
+        [coeffs[band]['intercept'] for band in data.band.values], dtype='float64'
+    )
+    betas = np.array(
+        [coeffs[band]['slope'] for band in data.band.values], dtype='float64'
+    )
+
+    alphas = xr.DataArray(
+        data=alphas,
+        coords={'band': data.band.values},
+        dims='band'
+    )
+
+    betas = xr.DataArray(
+        data=betas,
+        coords={'band': data.band.values},
+        dims='band'
+    )
+
+    # Apply the linear bandpass adjustment
+    return (alphas + betas * data).assign_attrs(**attrs)
 
 
 def landsat_brdf(
@@ -256,24 +287,26 @@ def landsat_brdf(
                     )
                     if params.apply_bandpass:
                         if data_obj is not None:
-                            if meta.sensor.lower() == 'l5':
-                                coeffs = load_dict(str(data_obj.l5_to_l8_coeffs_path).replace('.npz', '.json'))
-                            elif meta.sensor.lower() == 'l7':
-                                coeffs = load_dict(str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.json'))
-                            elif meta.sensor.lower() == 'l9':
-                                coeffs = load_dict(str(data_obj.l9_to_l8_coeffs_path).replace('.npz', '.json'))
+                            coeffs = None
+                            if meta.sensor.lower() in ['l5', 'l7']:
+                                try:
+                                    coeffs = load_dict(str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.json'))
+                                except FileNotFoundError:
+                                    coeffs = None
 
-                        import ipdb;ipdb.set_trace()
-                        if meta.sensor.lower() in ['l5', 'l7']:
-                            # Linearly adjust to Landsat 8
-                            sr_brdf = LA.bandpass(
-                                sr_brdf,
-                                meta.sensor,
-                                to='l8',
-                                scale_factor=UP_SCALE,
-                                src_nodata=NODATA,
-                                dst_nodata=NODATA
-                            )
+                            if coeffs is not None:
+                                sr_brdf = apply_bandpass(coeffs, sr_brdf)
+
+                        # if meta.sensor.lower() in ['l5', 'l7']:
+                        #     # Linearly adjust to Landsat 8
+                        #     sr_brdf = LA.bandpass(
+                        #         sr_brdf,
+                        #         meta.sensor,
+                        #         to='l8',
+                        #         scale_factor=UP_SCALE,
+                        #         src_nodata=NODATA,
+                        #         dst_nodata=NODATA
+                        #     )
                     if params.out_path is not None:
                         # Write to file
                         getattr(sr_brdf.gw, params.io['method'])(
@@ -343,16 +376,26 @@ def sentinel2_brdf(
                     src_nodata=NODATA,
                     dst_nodata=NODATA
                 )
-                # Linearly adjust to Landsat 8
                 if params.apply_bandpass:
-                    sr_brdf = LA.bandpass(
-                        sr_brdf,
-                        bandpass_sensor.lower(),
-                        to='l8',
-                        scale_factor=UP_SCALE,
-                        src_nodata=NODATA,
-                        dst_nodata=NODATA
-                    )
+                    if data_obj is not None:
+                        try:
+                            coeffs = load_dict(str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.json'))
+                        except FileNotFoundError:
+                            coeffs = None
+
+                        if coeffs is not None:
+                            sr_brdf = apply_bandpass(coeffs, sr_brdf)
+
+                # Linearly adjust to Landsat 8
+                # if params.apply_bandpass:
+                #     sr_brdf = LA.bandpass(
+                #         sr_brdf,
+                #         bandpass_sensor.lower(),
+                #         to='l8',
+                #         scale_factor=UP_SCALE,
+                #         src_nodata=NODATA,
+                #         dst_nodata=NODATA
+                #     )
                 if params.out_path is not None:
                     # Write to file
                     getattr(sr_brdf.gw, params.io['method'])(
@@ -390,15 +433,21 @@ def read_df(scene_info: Path) -> pd.DataFrame:
 
 def setup_paths(args) -> Data:
     sensor_lookup = {
-        'lt05': 'l5_to_l8_coeffs_path',
-        'le07': 'l7_to_l8_coeffs_path',
-        'lc09': 'l9_to_l8_coeffs_path',
-        's2': 's2_to_l8_coeffs_path'
+        SensorNames.landsat5.value: 'l5_to_l8_coeffs_path',
+        SensorNames.landsat7.value: 'l7_to_l8_coeffs_path',
+        SensorNames.sentinel2.value: 's2_to_l8_coeffs_path'
     }
-    l5_to_l8_coeffs_path = SensorPaths(Path(args.project_path).parent).l5_to_l8_coefficients
-    l7_to_l8_coeffs_path = SensorPaths(Path(args.project_path).parent).l7_to_l8_coefficients
-    l9_to_l8_coeffs_path = SensorPaths(Path(args.project_path).parent).l9_to_l8_coefficients
-    s2_to_l8_coeffs_path = SensorPaths(Path(args.project_path).parent).s2_to_l8_coefficients
+
+    if args.coeffs_path is None:
+        project_parent = Path(args.project_path).parent
+    else:
+        project_parent = Path(args.coeffs_path)
+
+    l5_to_l8_coeffs_path = SensorPaths(project_parent).l5_to_l8_coefficients
+    l7_to_l8_coeffs_path = SensorPaths(project_parent).l7_to_l8_coefficients
+    l9_to_l8_coeffs_path = SensorPaths(project_parent).l9_to_l8_coefficients
+    s2_to_l8_coeffs_path = SensorPaths(project_parent).s2_to_l8_coefficients
+
     landsat_path = SensorPaths(args.project_path).landsat
     sentinel2_path = SensorPaths(args.project_path).sentinel2
     landsat_scene_info = landsat_path / 'scene.info'
@@ -453,6 +502,7 @@ def load_data(args):
         file_format=FileFormat(args.file_format),
         out_path=args.out_path,
         apply_bandpass=args.apply_bandpass,
+        coeffs_path=args.coeffs_path,
         return_data=True if args.get_coeffs else False,
         n_workers=args.workers,
         threads_per_worker=args.threads
@@ -466,47 +516,92 @@ def load_data(args):
 
     if args.get_coeffs:
         if data_obj.landsat_df.empty:
-            data_obj.landsat_df = pd.DataFrame([], columns=['id', 'metadata', 'ang', 'date'])
+            data_obj.landsat_df = pd.DataFrame([], columns=['id', 'metadata', 'ang', 'date', 'sensor'])
         else:
             data_obj.landsat_df = (
                 data_obj.landsat_df
                 .rename(columns={'mtl.txt': 'metadata'})
                 .loc[:, ['id', 'metadata', 'ang', 'date']]
             )
+            data_obj.landsat_df = data_obj.landsat_df.assign(
+                sensor=data_obj.landsat_df.apply(lambda x: get_landsat_sensor_name(x.id), axis=1)
+            )
         if data_obj.sentinel2_df.empty:
-            data_obj.sentinel2_df = pd.DataFrame([], columns=['id', 'metadata', 'ang', 'date'])
+            data_obj.sentinel2_df = pd.DataFrame([], columns=['id', 'metadata', 'ang', 'date', 'sensor'])
         else:
             data_obj.sentinel2_df = (
                 data_obj.sentinel2_df
                 .assign(ang=0)
-                .loc[:, ['id', 'metadata', 'ang', 'date']]
+                .assign(sensor=SensorNames.sentinel2.value)
+                .loc[:, ['id', 'metadata', 'ang', 'date', 'sensor']]
             )
         df = pd.concat((data_obj.landsat_df, data_obj.sentinel2_df), axis=0)
+
+        # There must be Landsat 8/9 to calibrate on
+        if (SensorNames.landsat8.value not in df.sensor.values) \
+                and (SensorNames.landsat9.value not in df.sensor.values):
+            warnings.warn('There are no Landsat 8/9 images to calibrate to')
+            return
+
         if not df.empty:
-            df = df.loc[df[df.duplicated(subset='date')].date.dt.strftime('%Y-%m-%d').values]
+            df = df.assign(date_str=df.date.dt.strftime('%Y-%m-%d'))
+            df = df[df.duplicated(subset='date_str', keep=False)]
+
+        # Check for non-Landsat 8/9 scenes within +/- N days
+        #     landsat_non_l8 = df[df.sensor.str.startswith('l') & ~df.sensor.str.startswith(SensorNames.landsat8.value)]
+        #     landsat_l8 = df.query(f"sensor == '{SensorNames.landsat8.value}'")
+        #     if not landsat_non_l8.empty and not landsat_l8.empty:
+        #         diffs = np.abs(
+        #             landsat_non_l8.date.apply(lambda x: x.toordinal()).values
+        #             - landsat_l8.date.apply(lambda x: x.toordinal()).values
+        #         )
+        #         day_diff_match = np.where((diffs > 0) & (diffs < args.max_day_diff))[0]
+        #         if day_diff_match.shape[0] > 0:
+        #             import ipdb
+        #             ipdb.set_trace()
+
+        # Get date pairs
         date_pairs = []
         if not df.empty:
-            for date in df.date.unique():
-                df_pair = df.query(f"date == '{date}'")
-                if any([True if scene_id.startswith('LC08') else False for scene_id in df_pair.id.values]):
-                    sensor_names = []
-                    for scene_id in df_pair.id.values:
-                        if scene_id.startswith('LC08'):
-                            sensor_names.append('lc08')
-                        elif scene_id.startswith('S2'):
-                            sensor_names.append('s2')
-                        elif scene_id.startswith('LE07'):
-                            sensor_names.append('le07')
-                        else:
-                            sensor_names.append('lt05')
-                    df_pair['sensor'] = sensor_names
+            for date in df.date_str.unique():
+                df_pair = df.query(f"date_str == '{date}'")
+                if (SensorNames.landsat8.value in df_pair.sensor.values) \
+                        or (SensorNames.landsat9.value in df_pair.sensor.values):
                     date_pairs.append(df_pair)
 
         if date_pairs:
+            def apply_landsat_brdf(
+                data_array: xr.DataArray,
+                dataframe: pd.DataFrame,
+                sensor_enum: SensorNames,
+                lin_var: str = 'X'
+            ) -> dict:
+                xy_dict[lin_var][sensor_enum.value] = landsat_brdf(
+                    data_array, dataframe.query(f"sensor == '{sensor_enum.value}'"), params
+                )
+
+                return xy_dict
+
             for df_pair in date_pairs:
-                X = None
-                y = None
-                if 's2' in df_pair.sensor.values:
+                xy_dict = {
+                    'X': {
+                        SensorNames.sentinel2.value: [],
+                        SensorNames.landsat5.value: [],
+                        SensorNames.landsat7.value: []
+                    },
+                    'y': {
+                        SensorNames.landsat8.value: [],
+                        SensorNames.landsat9.value: []
+                    },
+                    'coeffs_path': {
+                        SensorNames.sentinel2.value: '',
+                        SensorNames.landsat5.value: '',
+                        SensorNames.landsat7.value: ''
+                    }
+                }
+
+                if SensorNames.sentinel2.value in df_pair.sensor.values:
+                    sensor_name = SensorNames.sentinel2
                     with gw.open(
                         data_obj.sentinel2_files,
                         time_names=data_obj.sentinel2_dates,
@@ -515,23 +610,16 @@ def load_data(args):
                             if band != Sentinel2Bands.scl.value
                         ]
                     ) as data_s2:
-                        X = sentinel2_brdf(data_s2, df_pair.query("sensor == 's2'"), params)
-                    coeffs_path = getattr(
-                        data_obj, data_obj.sensor_lookup[df_pair.query("sensor == 's2'").sensor.values[0]]
-                    )
-                elif 'lc08' not in df_pair.sensor.values:
-                    with gw.open(
-                        data_obj.landsat_files,
-                        time_names=data_obj.landsat_dates,
-                        band_names=[
-                            LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value
-                        ]
-                    ) as data_l:
-                        X = landsat_brdf(data_l, df_pair.query("sensor != 's2'"), params)
-                        coeffs_path = getattr(
-                            data_obj, data_obj.sensor_lookup[df_pair.query("sensor != 's2'").sensor.values[0]]
+                        xy_dict['X'][sensor_name.value] = sentinel2_brdf(
+                            data_s2, df_pair.query(f"sensor == '{sensor_name.value}'"), params
                         )
-                if 'lc08' in df_pair.sensor.values:
+                    xy_dict['coeffs_path'][sensor_name.value] = getattr(
+                        data_obj, data_obj.sensor_lookup[
+                            df_pair.query(f"sensor == '{sensor_name.value}'").sensor.values[0]
+                        ]
+                    )
+                if SensorNames.landsat5.value in df_pair.sensor.values:
+                    sensor_name = SensorNames.landsat5
                     with gw.open(
                         data_obj.landsat_files,
                         time_names=data_obj.landsat_dates,
@@ -539,41 +627,114 @@ def load_data(args):
                             LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value
                         ]
                     ) as data_l:
-                        y = landsat_brdf(data_l, df_pair.query("sensor == 'lc08'"), params)
+                        xy_dict = apply_landsat_brdf(data_l, df_pair, sensor_name)
+                        xy_dict['coeffs_path'][sensor_name.value] = getattr(
+                            data_obj, data_obj.sensor_lookup[
+                                df_pair.query(f"sensor == '{sensor_name.value}'").sensor.values[0]
+                            ]
+                        )
+                if SensorNames.landsat7.value in df_pair.sensor.values:
+                    sensor_name = SensorNames.landsat7
+                    with gw.open(
+                        data_obj.landsat_files,
+                        time_names=data_obj.landsat_dates,
+                        band_names=[
+                            LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value
+                        ]
+                    ) as data_l:
+                        xy_dict = apply_landsat_brdf(data_l, df_pair, sensor_name)
+                        xy_dict['coeffs_path'][sensor_name.value] = getattr(
+                            data_obj, data_obj.sensor_lookup[
+                                df_pair.query(f"sensor == '{sensor_name.value}'").sensor.values[0]
+                            ]
+                        )
+                if SensorNames.landsat8.value in df_pair.sensor.values:
+                    sensor_name = SensorNames.landsat8
+                    with gw.open(
+                        data_obj.landsat_files,
+                        time_names=data_obj.landsat_dates,
+                        band_names=[
+                            LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value
+                        ]
+                    ) as data_l:
+                        xy_dict = apply_landsat_brdf(data_l, df_pair, sensor_name, lin_var='y')
+                if SensorNames.landsat9.value in df_pair.sensor.values:
+                    sensor_name = SensorNames.landsat9
+                    with gw.open(
+                        data_obj.landsat_files,
+                        time_names=data_obj.landsat_dates,
+                        band_names=[
+                            LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value
+                        ]
+                    ) as data_l:
+                        xy_dict = apply_landsat_brdf(data_l, df_pair, sensor_name, lin_var='y')
 
-                if (X is None) or (y is None):
+                if max([len(y) for y in xy_dict['y'].values()]) == 0:
                     continue
 
-                # Flatten samples for each band
-                X = X[0].reshape(X[0].shape[0], -1)
-                y = y[0].reshape(y[0].shape[0], -1)
-                if coeffs_path.is_file():
-                    coeffs_data = load_array(coeffs_path)
-                    X = np.concatenate((coeffs_data['X'], X), axis=1)
-                    y = np.concatenate((coeffs_data['y'], y), axis=1)
+                y = None
+                counter = 0
+                for yl in xy_dict['y'].values():
+                    if yl:
+                        yl = yl[0].reshape(yl[0].shape[0], -1)
+                        if y is not None:
+                            y = y + yl
+                        else:
+                            y = yl.astype('float32')
+                        counter += 1
+                if y is not None:
+                    y /= float(counter)
 
-                save_array(coeffs_path, X=X, y=y)
+                for sensor_name in SensorNames:
+                    if sensor_name.value in xy_dict['X']:
+                        if len(xy_dict['X'][sensor_name.value]) > 0:
+                            X = xy_dict['X'][sensor_name.value][0]
+                            X = X.reshape(X.shape[0], -1)
+                            coeffs_path = Path(xy_dict['coeffs_path'][sensor_name.value])
+                            if coeffs_path.is_file():
+                                coeffs_data = load_array(coeffs_path)
+                                X = np.concatenate((coeffs_data['X'], X), axis=1)
+                                y_sensor = np.concatenate((coeffs_data['y'], y), axis=1)
+                            else:
+                                y_sensor = y.copy()
+                            save_array(coeffs_path, X=X, y=y_sensor)
+
+            show_plot = False  # True if (df_pair == date_pairs[-1]).all().all() else False
 
             if data_obj.l5_to_l8_coeffs_path.is_file():
                 coeffs_data = load_array(data_obj.l5_to_l8_coeffs_path)
-                coeffs = plot_scatter(coeffs_data['X'], coeffs_data['y'], scale_factor=UP_SCALE)
+                coeffs = get_lin_coefficients(
+                    coeffs_data['X'], coeffs_data['y'],
+                    scale_factor=UP_SCALE, plot_title='L5 to L8', show_plot=show_plot
+                )
                 save_dict(str(data_obj.l5_to_l8_coeffs_path).replace('.npz', '.json'), coeffs)
             if data_obj.l7_to_l8_coeffs_path.is_file():
                 coeffs_data = load_array(data_obj.l7_to_l8_coeffs_path)
-                coeffs = plot_scatter(coeffs_data['X'], coeffs_data['y'], scale_factor=UP_SCALE)
+                coeffs = get_lin_coefficients(
+                    coeffs_data['X'], coeffs_data['y'],
+                    scale_factor=UP_SCALE, plot_title='L7 to L8', show_plot=show_plot
+                )
                 save_dict(str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.json'), coeffs)
             if data_obj.s2_to_l8_coeffs_path.is_file():
                 coeffs_data = load_array(data_obj.s2_to_l8_coeffs_path)
-                coeffs = plot_scatter(coeffs_data['X'], coeffs_data['y'], scale_factor=UP_SCALE)
+                coeffs = get_lin_coefficients(
+                    coeffs_data['X'], coeffs_data['y'],
+                    scale_factor=UP_SCALE, plot_title='S2 to L8', show_plot=show_plot
+                )
                 save_dict(str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.json'), coeffs)
 
     else:
-        # with gw.open(
-        #     data_obj.sentinel2_files,
-        #     time_names=data_obj.sentinel2_dates,
-        #     band_names=[Sentinel2Bands(band).name for band in sentinel2_params.bands if band != Sentinel2Bands.scl.value]
-        # ) as data_s2:
-        #     sentinel2_brdf(data_s2, data_obj.sentinel2_df, params)
+        with gw.open(
+            data_obj.sentinel2_files,
+            time_names=data_obj.sentinel2_dates,
+            band_names=[Sentinel2Bands(band).name for band in sentinel2_params.bands if band != Sentinel2Bands.scl.value]
+        ) as data_s2:
+            sentinel2_brdf(
+                data_s2,
+                data_obj.sentinel2_df,
+                params,
+                data_obj=data_obj
+            )
         with gw.open(
             data_obj.landsat_files,
             time_names=data_obj.landsat_dates,
@@ -585,29 +746,3 @@ def load_data(args):
                 params,
                 data_obj=data_obj
             )
-
-    # with gw.open(
-    #     [str(f) for f in params.out_path.glob(f"*{params.io['extension']}")],
-    #     band_names=[LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value]
-    # ) as data_l:
-    #     data_l.where(lambda x: (x > 0) & (x < NODATA)).mean(dim='time', skipna=True).sel(band=['red', 'green', 'blue']).gw.imshow(robust=True)
-    #     # scale_data(data_l).mean(dim='time', skipna=True).sel(band=['red', 'green', 'blue']).gw.imshow(robust=True)
-    # plt.show()
-            # attrs = data_l.attrs.copy()
-            # data = gw.merge_stac(
-            #     data_l.assign_attrs(collection='landsat').where(lambda x: (x > 0) & (x < NODATA)),
-            #     data_s2.assign_attrs(collection='sentinel2').where(lambda x: (x > 0) & (x < NODATA))
-            # ).fillna(NODATA)
-            # def cv(x):
-            #     return x.std(dim='time', skipna=True) / x.mean(dim='time', skipna=True)
-            # # # Scale from [0,10000] to [0,1]
-            # data = scale_data(data)
-            # (
-            #     cv(
-            #         data
-            #         .where(lambda x: (x > 0) & (x < NODATA))
-            #         .sel(band=['red', 'green', 'blue'])
-            #     )
-            #     .gw.imshow(robust=True)
-            # )
-            # plt.show()
