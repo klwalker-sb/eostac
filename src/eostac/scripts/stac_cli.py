@@ -30,6 +30,10 @@ def main():
             '-o', '--out-path', dest='out_path', help='The output path (default: %(default)s)'
         )
         subparser.add_argument(
+            '-r', '--resolution', dest='resolution', help='The cell resolution (default: %(default)s)',
+            default=10.0, type=float
+        )
+        subparser.add_argument(
             '-w', '--workers', dest='workers', help='The number of process workers (default: %(default)s)',
             default=1, type=int
         )
@@ -88,14 +92,18 @@ def main():
                 default=FileFormat.netcdf.value
             )
             subparser.add_argument(
-                '-b', '--apply-bandpass', dest='apply_bandpass',
+                '--apply-bandpass', dest='apply_bandpass',
                 help='Whether to apply bandpass adjustments (default: %(default)s)',
                 action='store_true'
             )
             subparser.add_argument(
-                '-c', '--get-coeffs', dest='get_coeffs',
+                '--get-coeffs', dest='get_coeffs',
                 help='Whether to get bandpass coefficients (default: %(default)s)',
                 action='store_true'
+            )
+            subparser.add_argument(
+                '--coeffs-path', dest='coeffs_path',
+                help='The path where coefficient files are stored (default: %(default)s)'
             )
         elif process == Processes.adjust:
             subparser.add_argument(
@@ -124,6 +132,11 @@ def main():
             subparser.add_argument(
                 '--regress', dest='regress', help='Whether to apply linear regression (default: %(default)s)',
                 action='store_true'
+            )
+            subparser.add_argument(
+                '--max-day-diff', dest='max_day_diff',
+                help='The maximum day difference for Landsat (default: %(default)s)',
+                type=int, default=3
             )
 
     args = parser.parse_args()
