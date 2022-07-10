@@ -120,6 +120,7 @@ class Parameters(object):
     return_data: bool = attr.ib(default=False)
     n_workers: int = attr.ib(default=1, converter=int)
     threads_per_worker: int = attr.ib(default=1, converter=int)
+    show_plot: bool = attr.ib(default=False)
 
     def __attrs_post_init__(self):
         if self.out_path is not None:
@@ -505,7 +506,8 @@ def load_data(args):
         coeffs_path=args.coeffs_path,
         return_data=True if args.get_coeffs else False,
         n_workers=args.workers,
-        threads_per_worker=args.threads
+        threads_per_worker=args.threads,
+        show_plot=args.show_plot
     )
     landsat_params = LandsatParams(
         out_path=data_obj.landsat_path
@@ -699,27 +701,37 @@ def load_data(args):
                                 y_sensor = y.copy()
                             save_array(coeffs_path, X=X, y=y_sensor)
 
-            show_plot = False  # True if (df_pair == date_pairs[-1]).all().all() else False
-
             if data_obj.l5_to_l8_coeffs_path.is_file():
                 coeffs_data = load_array(data_obj.l5_to_l8_coeffs_path)
                 coeffs = get_lin_coefficients(
-                    coeffs_data['X'], coeffs_data['y'],
-                    scale_factor=UP_SCALE, plot_title='L5 to L8', show_plot=show_plot
+                    coeffs_data['X'],
+                    coeffs_data['y'],
+                    scale_factor=UP_SCALE,
+                    plot_title='L5 to L8',
+                    show_plot=params.show_plot,
+                    out_fig=str(data_obj.l5_to_l8_coeffs_path).replace('.npz', '.png')
                 )
                 save_dict(str(data_obj.l5_to_l8_coeffs_path).replace('.npz', '.json'), coeffs)
             if data_obj.l7_to_l8_coeffs_path.is_file():
                 coeffs_data = load_array(data_obj.l7_to_l8_coeffs_path)
                 coeffs = get_lin_coefficients(
-                    coeffs_data['X'], coeffs_data['y'],
-                    scale_factor=UP_SCALE, plot_title='L7 to L8', show_plot=show_plot
+                    coeffs_data['X'],
+                    coeffs_data['y'],
+                    scale_factor=UP_SCALE,
+                    plot_title='L7 to L8',
+                    show_plot=params.show_plot,
+                    out_fig=str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.png')
                 )
                 save_dict(str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.json'), coeffs)
             if data_obj.s2_to_l8_coeffs_path.is_file():
                 coeffs_data = load_array(data_obj.s2_to_l8_coeffs_path)
                 coeffs = get_lin_coefficients(
-                    coeffs_data['X'], coeffs_data['y'],
-                    scale_factor=UP_SCALE, plot_title='S2 to L8', show_plot=show_plot
+                    coeffs_data['X'],
+                    coeffs_data['y'],
+                    scale_factor=UP_SCALE,
+                    plot_title='S2 to L8',
+                    show_plot=params.show_plot,
+                    out_fig=str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.png')
                 )
                 save_dict(str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.json'), coeffs)
 
