@@ -205,6 +205,7 @@ def write_stack(
         (
             data
             .assign_coords(time=pd.DatetimeIndex(data.time.values).round('D'))
+            .assign_attrs(crs=data.gw.crs_to_pyproj.to_proj4())
             .isel(time=scene_idx)
             .squeeze()
             .transpose('band', 'y', 'x')
