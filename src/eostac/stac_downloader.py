@@ -51,6 +51,11 @@ class Parameters(object):
         if not isinstance(self.bounds, gpd.GeoDataFrame):
             self.bounds = gpd.read_file(self.bounds)
 
+        if self.bounds_query is not None:
+            self.bounds = self.bounds.query(self.bounds_query)
+        self.original_crs = self.bounds.crs
+        self.proj_bounds = self.bounds.total_bounds.flatten().tolist()
+
         # Translate to WGS 84 lat/lon
         if self.bounds.crs != pyproj.CRS.from_epsg(4326):
             self.bounds = self.bounds.to_crs('epsg:4326')
@@ -162,27 +167,27 @@ def s2_l2a_clouds(data: xr.DataArray) -> xr.DataArray:
     return data.sel(band=Sentinel2Bands('SCL').name).gw.replace(replace)
 
 
-def s2_l1c_clouds(data: xr.DataArray):
-    """Data masker for Sentinel-2 Level 2A
-    """
-    data = data.assign_coords(
-        band=S2CLOUDLESS_BAND_NAMES
-    )
-
-    kwargs = dict(
-        threshold=0.4,
-        average_over=4,
-        dilation_size=5,
-        all_bands=False
-    )
-    cloud_detector = S2PixelCloudDetector(**kwargs)
-    # Get the S2Cloudless bands
-    # B01, B02, B04, B05, B08, B8A, B09, B10, B11, B12
-    data_cloudless = data.sel(band=S2CLOUDLESS_BAND_NAMES)
-
-    X = Stackerizer(
-        stack_dims=('y', 'x', 'time'), direction='stack'
-    ).fit_transform(data_cloudless)
+# def s2_l1c_clouds(data: xr.DataArray):
+#     """Data masker for Sentinel-2 Level 1C
+#     """
+#     data = data.assign_coords(
+#         band=S2CLOUDLESS_BAND_NAMES
+#     )
+#
+#     kwargs = dict(
+#         threshold=0.4,
+#         average_over=4,
+#         dilation_size=5,
+#         all_bands=False
+#     )
+#     cloud_detector = S2PixelCloudDetector(**kwargs)
+#     # Get the S2Cloudless bands
+#     # B01, B02, B04, B05, B08, B8A, B09, B10, B11, B12
+#     data_cloudless = data.sel(band=S2CLOUDLESS_BAND_NAMES)
+#
+#     X = Stackerizer(
+#         stack_dims=('y', 'x', 'time'), direction='stack'
+#     ).fit_transform(data_cloudless)
 
 
 def write_stack(
@@ -209,7 +214,7 @@ def write_stack(
                 n_threads=threads_per_worker,
                 compress='lzw',
                 overwrite=True,
-                tqdm_kwargs={'position': tqdm_extra_position + 2, 'desc': 'Chunks'}
+                tqdm_kwargs={'position': tqdm_extra_position+2, 'desc': 'Chunks'}
             )
         )
 
@@ -265,6 +270,7 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
     data, df = open_stac(
         stac_catalog=landsat_params.stac_catalog,
         bounds=params.bounds,
+        proj_bounds=params.proj_bounds,
         collection=landsat_params.collection,
         bands=landsat_params.bands,
         cloud_cover_perc=params.cloud_cover_perc,
@@ -312,6 +318,7 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
     data, df = open_stac(
         stac_catalog=sentinel2_params.stac_catalog,
         bounds=params.bounds,
+        proj_bounds=params.proj_bounds,
         collection=sentinel2_params.collection,
         bands=sentinel2_params.bands,
         cloud_cover_perc=params.cloud_cover_perc,
