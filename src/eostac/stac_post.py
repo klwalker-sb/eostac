@@ -11,6 +11,7 @@ from .stac_downloader import LandsatParams, Sentinel2Params
 from .stac_utils import (
     SensorPaths,
     SensorNames,
+    GWSensorNameLookup,
     get_landsat_sensor_name,
     save_array,
     load_array,
@@ -20,7 +21,8 @@ from .stac_utils import (
     DOWN_SCALE,
     UP_SCALE,
     LandsatBands,
-    Sentinel2Bands
+    Sentinel2Bands,
+    pickle_scene_info
 )
 
 import geowombat as gw
@@ -235,6 +237,7 @@ def landsat_brdf(
         assert filename.is_file() and metadata.is_file(), 'The file and metadata must both exist.'
         meta = RT.get_landsat_coefficients(str(metadata))
 
+        bandpass_applied = False
         with tempfile.TemporaryDirectory() as tmp_dir:
             ref_image, ref_info = create_image_reference(
                 filename,
@@ -255,8 +258,8 @@ def landsat_brdf(
                 verbose=0
             )
 
-            if meta.sensor == 'l8':
-                rad_sensor = 'l8l7'
+            if meta.sensor in ('l8', 'l9'):
+                rad_sensor = f'{meta.sensor}l7'
             else:
                 rad_sensor = meta.sensor
 
@@ -297,6 +300,7 @@ def landsat_brdf(
 
                             if coeffs is not None:
                                 sr_brdf = apply_bandpass(coeffs, sr_brdf)
+                                bandpass_applied = True
 
                         # if meta.sensor.lower() in ['l5', 'l7']:
                         #     # Linearly adjust to Landsat 8
@@ -314,6 +318,19 @@ def landsat_brdf(
                             params.get_out_file(row.id),
                             **params.io['kwargs']
                         )
+                        # Save the scene info
+                        scene_info = params.out_path / 'scene.info'
+                        df = pd.DataFrame(
+                            data=[[
+                                row.id,
+                                row.date,
+                                GWSensorNameLookup[meta.sensor].value.value,
+                                True,
+                                bandpass_applied
+                            ]],
+                            columns=['id', 'date', 'sensor', 'brdf', 'bandpass']
+                        )
+                        df, df_download = pickle_scene_info(df, date_pos=3, scene_info=scene_info)
                     else:
                         if params.return_data:
                             values.append(sr_brdf.data.compute(num_workers=params.n_workers))
@@ -343,6 +360,7 @@ def sentinel2_brdf(
         filename = metadata.parent / f'{row.id}.tif'
         assert filename.is_file() and metadata.is_file()
 
+        bandpass_applied = False
         with tempfile.TemporaryDirectory() as tmp_dir:
             ref_image, ref_info = create_image_reference(
                 filename,
@@ -358,7 +376,7 @@ def sentinel2_brdf(
                 verbose=0
             )
             rad_sensor = angle_info.sensor + 'l7'
-            bandpass_sensor = angle_info.sensor
+            # bandpass_sensor = angle_info.sensor
             open_kwargs = {
                 'chunks': data.gw.row_chunks,
                 'resampling': 'bilinear'
@@ -386,6 +404,7 @@ def sentinel2_brdf(
 
                         if coeffs is not None:
                             sr_brdf = apply_bandpass(coeffs, sr_brdf)
+                            bandpass_applied = True
 
                 # Linearly adjust to Landsat 8
                 # if params.apply_bandpass:
@@ -403,6 +422,19 @@ def sentinel2_brdf(
                         params.get_out_file(row.id),
                         **params.io['kwargs']
                     )
+                    # Save the scene info
+                    scene_info = params.out_path / 'scene.info'
+                    df = pd.DataFrame(
+                        data=[[
+                            row.id,
+                            row.date,
+                            GWSensorNameLookup[angle_info.sensor].value.value,
+                            True,
+                            bandpass_applied
+                        ]],
+                        columns=['id', 'date', 'sensor', 'brdf', 'bandpass']
+                    )
+                    df, df_download = pickle_scene_info(df, date_pos=2, scene_info=scene_info)
                 else:
                     if params.return_data:
                         values.append(sr_brdf.data.compute(num_workers=params.n_workers))
