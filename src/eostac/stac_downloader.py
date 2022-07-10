@@ -270,7 +270,7 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
     data, df = open_stac(
         stac_catalog=landsat_params.stac_catalog,
         bounds=params.bounds,
-        proj_bounds=params.proj_bounds,
+        proj_bounds=None if params.original_crs == pyproj.CRS.from_epsg(4326) else params.proj_bounds,
         collection=landsat_params.collection,
         bands=landsat_params.bands,
         cloud_cover_perc=params.cloud_cover_perc,
@@ -318,7 +318,7 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
     data, df = open_stac(
         stac_catalog=sentinel2_params.stac_catalog,
         bounds=params.bounds,
-        proj_bounds=params.proj_bounds,
+        proj_bounds=None if params.original_crs == pyproj.CRS.from_epsg(4326) else params.proj_bounds,
         collection=sentinel2_params.collection,
         bands=sentinel2_params.bands,
         cloud_cover_perc=params.cloud_cover_perc,
