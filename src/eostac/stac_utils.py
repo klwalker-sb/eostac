@@ -151,6 +151,14 @@ class SensorNames(enum.Enum):
     sentinel2 = 's2a'
 
 
+class GWSensorNameLookup(enum.Enum):
+    l5 = SensorNames.landsat5
+    l7 = SensorNames.landsat7
+    l8 = SensorNames.landsat8
+    l9 = SensorNames.landsat9
+    s2 = SensorNames.sentinel2
+
+
 def get_landsat_sensor_name(sensor_id: str):
     for sensor_name in SensorNames:
         if fnmatch.fnmatch(sensor_id.lower(), f'{sensor_name.value}*'):
