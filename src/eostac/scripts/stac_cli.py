@@ -105,6 +105,11 @@ def main():
                 '--coeffs-path', dest='coeffs_path',
                 help='The path where coefficient files are stored (default: %(default)s)'
             )
+            subparser.add_argument(
+                '--show-plot', dest='show_plot',
+                help='Whether to show the regression plots (default: %(default)s)',
+                action='store_true'
+            )
         elif process == Processes.adjust:
             subparser.add_argument(
                 '--epsg', dest='epsg',
