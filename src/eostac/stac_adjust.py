@@ -86,10 +86,14 @@ def adjust_data(args):
 
                     subprocess.call(com, shell=True)
     else:
+        last_id = df.iloc[-1].unique_id
         for row in tqdm(df.itertuples(), total=len(df.index), position=0, desc='Sample'):
             id_path = str(Path(args.out_path) / f"{row.unique_id:06d}")
             com = "eostac brdf " \
                   f"--project-path {id_path} " \
                   "--get-coeffs"
+
+            if row.unique_id == last_id:
+                com += ' --show-plot'
 
             subprocess.call(com, shell=True)
