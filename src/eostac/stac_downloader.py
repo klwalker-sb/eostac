@@ -17,9 +17,11 @@ from geowombat.core.stac import open_stac
 # from geowombat.ml.transformers import Stackerizer
 
 import pandas as pd
+import geopandas as gpd
 from rasterio.enums import Resampling
 import xarray as xr
-from s2cloudless import S2PixelCloudDetector
+import pyproj
+# from s2cloudless import S2PixelCloudDetector
 import attr
 from tqdm.auto import tqdm
 
@@ -43,6 +45,15 @@ class Parameters(object):
     max_items: T.Union[int, None] = attr.ib(default=100)
     tqdm_item_position: int = attr.ib(default=0)
     tqdm_extra_position: int = attr.ib(default=1)
+
+    def __attrs_post_init__(self):
+        # Open a file if passed as a path
+        if not isinstance(self.bounds, gpd.GeoDataFrame):
+            self.bounds = gpd.read_file(self.bounds)
+
+        # Translate to WGS 84 lat/lon
+        if self.bounds.crs != pyproj.CRS.from_epsg(4326):
+            self.bounds = self.bounds.to_crs('epsg:4326')
 
 
 class SensorParams(ABC):
