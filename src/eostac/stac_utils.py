@@ -51,7 +51,8 @@ def get_lin_coefficients(
     y: np.ndarray,
     scale_factor: float,
     plot_title: str,
-    show_plot: bool = False
+    show_plot: bool = False,
+    out_fig: T.Union[str, Path] = None
 ):
     sns.set_style('whitegrid')
     fig, axes = plt.subplots(2, 3, figsize=(8, 4), dpi=100, sharex=True, sharey=True)
@@ -131,6 +132,10 @@ def get_lin_coefficients(
             'slope': float(reg.coef_),
             'intercept': float(reg.intercept_)
         }
+
+    if out_fig is not None:
+        plt.tight_layout()
+        plt.savefig(out_fig, dpi=300)
 
     if show_plot:
         plt.show()
