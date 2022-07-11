@@ -1,0 +1,26 @@
+{
+    "blue": {
+        "slope": 1.000000238418579,
+        "intercept": -7.450580596923828e-09
+    },
+    "green": {
+        "slope": 0.9999999403953552,
+        "intercept": 3.725290298461914e-09
+    },
+    "red": {
+        "slope": 1.0,
+        "intercept": 0.0
+    },
+    "nir": {
+        "slope": 0.9999998807907104,
+        "intercept": 2.9802322387695312e-08
+    },
+    "swir1": {
+        "slope": 1.0,
+        "intercept": 0.0
+    },
+    "swir2": {
+        "slope": 1.0,
+        "intercept": 0.0
+    }
+}
