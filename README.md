@@ -93,6 +93,35 @@ eostac brdf \
     --threads 8
 ```
 
+> Output BRDF names
+
+```text
+L<processing level>_<image acquisition date>_<file creation date>_C<collection><extension>
+```
+
+where, 
+
+* processing level
+  * 3A
+    * BRDF
+  * 3B
+    * Bandpass
+* image acquisition date
+  * YYYYMMDD
+* file creation date
+  * YYYYMMDD
+* collection
+  * 01
+* extension
+  * .tif
+  * .nc
+
+Example:
+
+```text
+L3B_20210104_20220711_C01.tif
+```
+
 ### View scene file information
 
 #### Read the `scene.info` file
