@@ -245,15 +245,29 @@ class SensorPaths(object):
         return s2path
 
 
-def pickle_scene_info(df: pd.DataFrame, date_pos: int, scene_info: Path):
+def read_df(scene_info: Path) -> pd.DataFrame:
+    """Reads the scene info DataFrame
+    """
+    df = pd.read_pickle(scene_info).set_index('date')
+    df.index.rename(None, inplace=True)
+    df = df.assign(date=df.index)
+
+    return df.sort_index()
+
+
+def pickle_scene_info(
+    df: pd.DataFrame,
+    date_pos: int,
+    scene_info: Path
+) -> tuple:
     """Pickles scene information to/from file
     """
     df['date'] = pd.DatetimeIndex(df.id.str.split('_').str[date_pos])
     df_download = df.copy()
     if scene_info.is_file():
         df_info = pd.read_pickle(scene_info)
-        if len(df_info.index.difference(df.index)) > 0:
-            df = pd.concat((df_info, df), axis=0)
+        if (len(df_info.index) == 1) or (len(df_info.index.difference(df.index)) > 0):
+            df = pd.concat((df_info, df), axis=0).reset_index(drop=True)
         df = df.drop_duplicates(subset=['id', 'date'])
     df.to_pickle(scene_info)
 
