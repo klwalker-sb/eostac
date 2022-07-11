@@ -93,7 +93,16 @@ IO_PARAMETERS = {
         'kwargs': {
             'compress': 'lzw',
             'overwrite': True,
-            'tqdm_kwargs': {}
+            'nodata': NODATA,
+            'tqdm_kwargs': {},
+            'tags': {
+                'gain': 1e-4,
+                'offset': 0.0,
+                'data_range': '[0,10_000]',
+                'processing_level': 'SR,BRDF',
+                'nodata': NODATA,
+                'dtype': 'uint16'
+            }
         }
     },
     FileFormat.netcdf: {
@@ -190,7 +199,7 @@ class Data:
     sentinel2_df: pd.DataFrame
 
 
-def apply_bandpass(coeffs: dict, data: xr.DataArray) -> xr.DataArray:
+def apply_bandpass(data: xr.DataArray, coeffs: dict) -> xr.DataArray:
     """Applies a band-pass calibration adjustment
     """
     attrs = data.attrs.copy()
@@ -215,6 +224,20 @@ def apply_bandpass(coeffs: dict, data: xr.DataArray) -> xr.DataArray:
 
     # Apply the linear bandpass adjustment
     return (alphas + betas * data).assign_attrs(**attrs)
+
+
+def finalize_brdf(sr_brdf: xr.DataArray, data_mask: xr.DataArray, attrs: dict) -> xr.DataArray:
+    """Data should be in [0,1] range
+    """
+    return (
+        xr.where(
+            data_mask == 1,
+            (sr_brdf*10_000).clip(0, 10_000).astype('uint16'),
+            NODATA
+        )
+        .assign_attrs(**attrs)
+        .assign_attrs(nodatavals=(NODATA,)*sr_brdf.gw.nbands)
+    )
 
 
 def landsat_brdf(
@@ -294,6 +317,8 @@ def landsat_brdf(
                         src_nodata=NODATA,
                         dst_nodata=NODATA
                     )
+                    # [0,10000]->[0,1]
+                    sr_brdf = scale_data(sr_brdf)
                     if params.apply_bandpass:
                         if data_obj is not None:
                             coeffs = None
@@ -304,7 +329,7 @@ def landsat_brdf(
                                     coeffs = None
 
                             if coeffs is not None:
-                                sr_brdf = apply_bandpass(coeffs, sr_brdf)
+                                sr_brdf = apply_bandpass(sr_brdf, coeffs)
                                 bandpass_applied = True
 
                         # if meta.sensor.lower() in ['l5', 'l7']:
@@ -318,11 +343,7 @@ def landsat_brdf(
                         #         dst_nodata=NODATA
                         #     )
 
-                    sr_brdf = xr.where(
-                        data_mask == 1,
-                        sr_brdf,
-                        np.nan
-                    ).assign_attrs(**attrs)
+                    sr_brdf = finalize_brdf(sr_brdf, data_mask, attrs)
 
                     if params.out_path is not None:
                         # Write to file
@@ -409,6 +430,8 @@ def sentinel2_brdf(
                     src_nodata=NODATA,
                     dst_nodata=NODATA
                 )
+                # [0,10000]->[0,1]
+                sr_brdf = scale_data(sr_brdf)
                 if params.apply_bandpass:
                     if data_obj is not None:
                         try:
@@ -417,14 +440,8 @@ def sentinel2_brdf(
                             coeffs = None
 
                         if coeffs is not None:
-                            sr_brdf = apply_bandpass(coeffs, sr_brdf)
+                            sr_brdf = apply_bandpass(sr_brdf, coeffs)
                             bandpass_applied = True
-
-                sr_brdf = xr.where(
-                    data_mask == 1,
-                    sr_brdf,
-                    np.nan
-                ).assign_attrs(**attrs)
 
                 # Linearly adjust to Landsat 8
                 # if params.apply_bandpass:
@@ -436,6 +453,9 @@ def sentinel2_brdf(
                 #         src_nodata=NODATA,
                 #         dst_nodata=NODATA
                 #     )
+
+                sr_brdf = finalize_brdf(sr_brdf, data_mask, attrs)
+
                 if params.out_path is not None:
                     # Write to file
                     getattr(sr_brdf.gw, params.io['method'])(
