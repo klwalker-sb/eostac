@@ -5,6 +5,7 @@ import enum
 from dataclasses import dataclass
 import typing as T
 import warnings
+from datetime import date
 
 from .stac_downloader import NODATA
 from .stac_downloader import LandsatParams, Sentinel2Params
@@ -134,13 +135,21 @@ class Parameters(object):
     n_workers: int = attr.ib(default=1, converter=int)
     threads_per_worker: int = attr.ib(default=1, converter=int)
     show_plot: bool = attr.ib(default=False)
+    collection: str = attr.ib(default='C01')
 
     def __attrs_post_init__(self):
         if self.out_path is not None:
             self.out_path = Path(self.out_path)
             self.out_path.mkdir(parents=True, exist_ok=True)
 
-    def get_out_file(self, name: str):
+    def build_scene_id(self, scene_date: str, brdf_applied: bool, bandpass_applied: bool) -> str:
+        level = 'L3B' if (brdf_applied and bandpass_applied) else 'L3A'
+        created = date.today().strftime('%Y%m%d')
+        scene_id = f"{level}_{scene_date}_{created}_{self.collection}"
+
+        return scene_id
+
+    def get_out_file(self, name: str) -> Path:
         return self.out_path / f"{name}{self.io['extension']}"
 
     @property
@@ -253,8 +262,10 @@ def landsat_brdf(
     values = []
     attrs = data.attrs.copy()
     for row in scene_info.rename(columns={'mtl.txt': 'metadata'}).itertuples():
+        out_scene_path_l3a = params.get_out_file(params.build_scene_id(row.date.strftime('%Y%m%d'), True, True))
+        out_scene_path_l3b = params.get_out_file(params.build_scene_id(row.date.strftime('%Y%m%d'), True, False))
         if params.out_path is not None:
-            if params.get_out_file(row.id).is_file():
+            if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
                 continue
         data_slice = scale_data(
             data.sel(time=row.date)
@@ -334,23 +345,15 @@ def landsat_brdf(
                                 sr_brdf = apply_bandpass(sr_brdf, coeffs)
                                 bandpass_applied = True
 
-                        # if meta.sensor.lower() in ['l5', 'l7']:
-                        #     # Linearly adjust to Landsat 8
-                        #     sr_brdf = LA.bandpass(
-                        #         sr_brdf,
-                        #         meta.sensor,
-                        #         to='l8',
-                        #         scale_factor=UP_SCALE,
-                        #         src_nodata=NODATA,
-                        #         dst_nodata=NODATA
-                        #     )
-
                     sr_brdf = finalize_brdf(sr_brdf, data_mask, attrs)
 
                     if params.out_path is not None:
+                        out_scene_path = params.get_out_file(
+                            params.build_scene_id(row.date.strftime('%Y%m%d'), True, bandpass_applied)
+                        )
                         # Write to file
                         getattr(sr_brdf.gw, params.io['method'])(
-                            params.get_out_file(row.id),
+                            out_scene_path,
                             **params.io['kwargs']
                         )
                         # Save the scene info
@@ -358,12 +361,13 @@ def landsat_brdf(
                         df = pd.DataFrame(
                             data=[[
                                 row.id,
+                                out_scene_path.name,
                                 row.date,
                                 GWSensorNameLookup[meta.sensor].value.value,
                                 True,
                                 bandpass_applied
                             ]],
-                            columns=['id', 'date', 'sensor', 'brdf', 'bandpass']
+                            columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
                         )
                         df, df_download = pickle_scene_info(df, date_pos=3, scene_info=scene_info)
                     else:
@@ -385,8 +389,10 @@ def sentinel2_brdf(
     values = []
     attrs = data.attrs.copy()
     for row in scene_info.itertuples():
+        out_scene_path_l3a = params.get_out_file(params.build_scene_id(row.date.strftime('%Y%m%d'), True, True))
+        out_scene_path_l3b = params.get_out_file(params.build_scene_id(row.date.strftime('%Y%m%d'), True, False))
         if params.out_path is not None:
-            if params.get_out_file(row.id).is_file():
+            if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
                 continue
         data_slice = scale_data(
             data.sel(time=row.date)
@@ -445,23 +451,15 @@ def sentinel2_brdf(
                             sr_brdf = apply_bandpass(sr_brdf, coeffs)
                             bandpass_applied = True
 
-                # Linearly adjust to Landsat 8
-                # if params.apply_bandpass:
-                #     sr_brdf = LA.bandpass(
-                #         sr_brdf,
-                #         bandpass_sensor.lower(),
-                #         to='l8',
-                #         scale_factor=UP_SCALE,
-                #         src_nodata=NODATA,
-                #         dst_nodata=NODATA
-                #     )
-
                 sr_brdf = finalize_brdf(sr_brdf, data_mask, attrs)
 
                 if params.out_path is not None:
+                    out_scene_path = params.get_out_file(
+                        params.build_scene_id(row.date.strftime('%Y%m%d'), True, bandpass_applied)
+                    )
                     # Write to file
                     getattr(sr_brdf.gw, params.io['method'])(
-                        params.get_out_file(row.id),
+                        out_scene_path,
                         **params.io['kwargs']
                     )
                     # Save the scene info
@@ -469,12 +467,13 @@ def sentinel2_brdf(
                     df = pd.DataFrame(
                         data=[[
                             row.id,
+                            out_scene_path.name,
                             row.date,
                             GWSensorNameLookup[angle_info.sensor].value.value,
                             True,
                             bandpass_applied
                         ]],
-                        columns=['id', 'date', 'sensor', 'brdf', 'bandpass']
+                        columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
                     )
                     df, df_download = pickle_scene_info(df, date_pos=2, scene_info=scene_info)
                 else:
