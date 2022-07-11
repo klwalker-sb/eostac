@@ -22,7 +22,8 @@ from .stac_utils import (
     UP_SCALE,
     LandsatBands,
     Sentinel2Bands,
-    pickle_scene_info
+    pickle_scene_info,
+    assign_crs
 )
 
 import geowombat as gw
@@ -143,6 +144,7 @@ def create_image_reference(filename: Path, out_dir: Path, chunks: int):
     RefInfo = namedtuple('RefInfo', 'bounds crs res')
 
     with gw.open(filename, chunks=chunks) as src:
+        src = assign_crs(src)
         ref_info = RefInfo(
             bounds=src.gw.bounds,
             crs=src.crs,
@@ -224,6 +226,7 @@ def landsat_brdf(
     """Calculates BRDF for Landsat
     """
     values = []
+    attrs = data.attrs.copy()
     for row in scene_info.rename(columns={'mtl.txt': 'metadata'}).itertuples():
         if params.out_path is not None:
             if params.get_out_file(row.id).is_file():
@@ -231,6 +234,8 @@ def landsat_brdf(
         data_slice = scale_data(
             data.sel(time=row.date)
         )
+        data_mask = xr.where(data_slice == NODATA, 0, 1)
+
         metadata = Path(row.metadata)
         angle_coeff = row.ang
         filename = metadata.parent / f'{row.id}.tif'
@@ -312,6 +317,13 @@ def landsat_brdf(
                         #         src_nodata=NODATA,
                         #         dst_nodata=NODATA
                         #     )
+
+                    sr_brdf = xr.where(
+                        data_mask == 1,
+                        sr_brdf,
+                        np.nan
+                    ).assign_attrs(**attrs)
+
                     if params.out_path is not None:
                         # Write to file
                         getattr(sr_brdf.gw, params.io['method'])(
@@ -348,6 +360,7 @@ def sentinel2_brdf(
     """Calculates BRDF for Sentinel-2
     """
     values = []
+    attrs = data.attrs.copy()
     for row in scene_info.itertuples():
         if params.out_path is not None:
             if params.get_out_file(row.id).is_file():
@@ -355,6 +368,7 @@ def sentinel2_brdf(
         data_slice = scale_data(
             data.sel(time=row.date)
         )
+        data_mask = xr.where(data_slice == NODATA, 0, 1)
 
         metadata = Path(row.metadata)
         filename = metadata.parent / f'{row.id}.tif'
@@ -405,6 +419,12 @@ def sentinel2_brdf(
                         if coeffs is not None:
                             sr_brdf = apply_bandpass(coeffs, sr_brdf)
                             bandpass_applied = True
+
+                sr_brdf = xr.where(
+                    data_mask == 1,
+                    sr_brdf,
+                    np.nan
+                ).assign_attrs(**attrs)
 
                 # Linearly adjust to Landsat 8
                 # if params.apply_bandpass:
@@ -492,9 +512,22 @@ def setup_paths(args) -> Data:
     if landsat_scene_info.is_file():
         landsat_df = read_df(landsat_scene_info)
         landsat_df = landsat_df[time_slice]
+        # Full paths are needed for the angle creation tools
+        ang = [str(landsat_path / Path(row.ang).name) for row in landsat_df.itertuples()]
+        mtl_txt = [str(landsat_path / Path(landsat_df.iloc[i]['mtl.txt']).name) for i in range(len(landsat_df.index))]
+        mtl_xml = [str(landsat_path / Path(landsat_df.iloc[i]['mtl.xml']).name) for i in range(len(landsat_df.index))]
+        landsat_df = landsat_df.assign(**{
+            'ang': ang,
+            'mtl.txt': mtl_txt,
+            'mtl.xml': mtl_xml
+        })
     if sentinel2_scene_info.is_file():
         sentinel2_df = read_df(sentinel2_scene_info)
         sentinel2_df = sentinel2_df[time_slice]
+        meta = [str(sentinel2_path / Path(row.metadata).name) for row in sentinel2_df.itertuples()]
+        sentinel2_df = sentinel2_df.assign(**{
+            'metadata': meta
+        })
 
     # Get full image paths
     if not landsat_df.empty:
@@ -768,25 +801,27 @@ def load_data(args):
                 save_dict(str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.json'), coeffs)
 
     else:
-        with gw.open(
-            data_obj.sentinel2_files,
-            time_names=data_obj.sentinel2_dates,
-            band_names=[Sentinel2Bands(band).name for band in sentinel2_params.bands if band != Sentinel2Bands.scl.value]
-        ) as data_s2:
-            sentinel2_brdf(
-                data_s2,
-                data_obj.sentinel2_df,
-                params,
-                data_obj=data_obj
-            )
-        with gw.open(
-            data_obj.landsat_files,
-            time_names=data_obj.landsat_dates,
-            band_names=[LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value]
-        ) as data_l:
-            landsat_brdf(
-                data_l,
-                data_obj.landsat_df,
-                params,
-                data_obj=data_obj
-            )
+        if data_obj.sentinel2_files:
+            with gw.open(
+                data_obj.sentinel2_files,
+                time_names=data_obj.sentinel2_dates,
+                band_names=[Sentinel2Bands(band).name for band in sentinel2_params.bands if band != Sentinel2Bands.scl.value]
+            ) as data_s2:
+                sentinel2_brdf(
+                    data_s2,
+                    data_obj.sentinel2_df,
+                    params,
+                    data_obj=data_obj
+                )
+        if data_obj.landsat_files:
+            with gw.open(
+                data_obj.landsat_files,
+                time_names=data_obj.landsat_dates,
+                band_names=[LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value]
+            ) as data_l:
+                landsat_brdf(
+                    data_l,
+                    data_obj.landsat_df,
+                    params,
+                    data_obj=data_obj
+                )

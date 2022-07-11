@@ -5,6 +5,7 @@ import fnmatch
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 from sklearn.linear_model import LinearRegression
 import attr
 import matplotlib.pyplot as plt
@@ -157,6 +158,8 @@ class GWSensorNameLookup(enum.Enum):
     l8 = SensorNames.landsat8
     l9 = SensorNames.landsat9
     s2 = SensorNames.sentinel2
+    s2a = SensorNames.sentinel2
+    s2b = SensorNames.sentinel2
 
 
 def get_landsat_sensor_name(sensor_id: str):
@@ -255,3 +258,7 @@ def pickle_scene_info(df: pd.DataFrame, date_pos: int, scene_info: Path):
     df.to_pickle(scene_info)
 
     return df, df_download
+
+
+def assign_crs(data: xr.DataArray) -> xr.DataArray:
+    return data.assign_attrs(crs=data.gw.crs_to_pyproj.to_proj4())
