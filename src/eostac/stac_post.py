@@ -142,10 +142,16 @@ class Parameters(object):
             self.out_path = Path(self.out_path)
             self.out_path.mkdir(parents=True, exist_ok=True)
 
-    def build_scene_id(self, scene_date: str, brdf_applied: bool, bandpass_applied: bool) -> str:
+    def build_scene_id(
+        self,
+        grid_id: str,
+        scene_date: str,
+        brdf_applied: bool,
+        bandpass_applied: bool
+    ) -> str:
         level = 'L3B' if (brdf_applied and bandpass_applied) else 'L3A'
         created = date.today().strftime('%Y%m%d')
-        scene_id = f"{level}_{scene_date}_{created}_{self.collection}"
+        scene_id = f"{level}_{grid_id}_{scene_date}_{created}_{self.collection}"
 
         return scene_id
 
@@ -261,9 +267,10 @@ def landsat_brdf(
     """
     values = []
     attrs = data.attrs.copy()
+    grid_id = params.out_path.name
     for row in scene_info.rename(columns={'mtl.txt': 'metadata'}).itertuples():
-        out_scene_path_l3a = params.get_out_file(params.build_scene_id(row.date.strftime('%Y%m%d'), True, True))
-        out_scene_path_l3b = params.get_out_file(params.build_scene_id(row.date.strftime('%Y%m%d'), True, False))
+        out_scene_path_l3a = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, True))
+        out_scene_path_l3b = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, False))
         if params.out_path is not None:
             if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
                 continue
@@ -349,7 +356,7 @@ def landsat_brdf(
 
                     if params.out_path is not None:
                         out_scene_path = params.get_out_file(
-                            params.build_scene_id(row.date.strftime('%Y%m%d'), True, bandpass_applied)
+                            params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, bandpass_applied)
                         )
                         # Write to file
                         getattr(sr_brdf.gw, params.io['method'])(
@@ -388,9 +395,10 @@ def sentinel2_brdf(
     """
     values = []
     attrs = data.attrs.copy()
+    grid_id = params.out_path.name
     for row in scene_info.itertuples():
-        out_scene_path_l3a = params.get_out_file(params.build_scene_id(row.date.strftime('%Y%m%d'), True, True))
-        out_scene_path_l3b = params.get_out_file(params.build_scene_id(row.date.strftime('%Y%m%d'), True, False))
+        out_scene_path_l3a = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, True))
+        out_scene_path_l3b = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, False))
         if params.out_path is not None:
             if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
                 continue
@@ -455,7 +463,7 @@ def sentinel2_brdf(
 
                 if params.out_path is not None:
                     out_scene_path = params.get_out_file(
-                        params.build_scene_id(row.date.strftime('%Y%m%d'), True, bandpass_applied)
+                        params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, bandpass_applied)
                     )
                     # Write to file
                     getattr(sr_brdf.gw, params.io['method'])(
