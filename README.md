@@ -120,3 +120,37 @@ df_slice.id.values.tolist()
 ```python
 df_s2a = df.query("id == 's2a'")
 ```
+
+#### Open time series
+
+```python
+from pathlib import Path
+import geowombat as gw
+from eostac.stac_utils import read_df
+import matplotlib.pyplot as plt
+
+
+brdf_path = Path('/brdf/00001')
+df = read_df(brdf_path / 'scene.info')
+file_list = (str(brdf_path) + '/' + df.id + '.tif').values.tolist()
+time_names = df.date.dt.strftime('%Y-%m-%d').values.tolist()
+band_names = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2']
+
+# We use overlap='min' because the nodata values are 32768. 
+with gw.open(
+    file_list, 
+    time_names=time_names, 
+    band_names=band_names, 
+    overlap='min'
+) as src:
+    # View RGB of first date
+    (
+        src
+        .isel(time=0)
+        .sel(band=['red', 'green', 'blue'])
+        .squeeze()
+        .where(lambda x: x != x.nodatavals[0])
+        .gw.imshow(robust=True)
+    )
+    plt.show()
+```

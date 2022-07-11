@@ -238,6 +238,7 @@ def finalize_brdf(sr_brdf: xr.DataArray, data_mask: xr.DataArray, attrs: dict) -
         )
         .assign_attrs(**attrs)
         .assign_attrs(nodatavals=(NODATA,)*sr_brdf.gw.nbands)
+        .assign_attrs(crs=sr_brdf.gw.crs_to_pyproj.to_proj4())
     )
 
 
