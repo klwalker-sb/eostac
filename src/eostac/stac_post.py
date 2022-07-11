@@ -22,6 +22,7 @@ from .stac_utils import (
     UP_SCALE,
     LandsatBands,
     Sentinel2Bands,
+    read_df,
     pickle_scene_info,
     assign_crs
 )
@@ -492,16 +493,6 @@ def scale_data(data: xr.DataArray, scale_factor: float = UP_SCALE):
         )
         .astype('float64')
     ).assign_attrs(**data.attrs)
-
-
-def read_df(scene_info: Path) -> pd.DataFrame:
-    """Reads the scene info DataFrame
-    """
-    df = pd.read_pickle(scene_info).set_index('date')
-    df.index.rename(None, inplace=True)
-    df = df.assign(date=df.index)
-
-    return df.sort_index()
 
 
 def setup_paths(args) -> Data:
