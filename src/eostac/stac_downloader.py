@@ -58,9 +58,10 @@ class Parameters(object):
             self.bounds = self.bounds.query(self.bounds_query)
         # Buffer the bounds
         if self.bounds_buffer != 0:
-            self.bounds = self.bounds.buffer(
+            buffer_geom = self.bounds.buffer(
                 self.bounds_buffer, cap_style=CAP_STYLE.square, join_style=JOIN_STYLE.mitre
             )
+            self.bounds = self.bounds.assign(geometry=buffer_geom)
         self.original_crs = self.bounds.crs
         self.proj_bounds = self.bounds.total_bounds.flatten().tolist()
 
@@ -304,7 +305,6 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
         chunksize=params.chunksize,
         start_date=params.start_date,
         end_date=params.end_date,
-        bounds_query=params.bounds_query,
         mask_data=landsat_params.mask_data,
         resolution=landsat_params.resolution,
         epsg=landsat_params.epsg,
