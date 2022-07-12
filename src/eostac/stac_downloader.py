@@ -19,8 +19,10 @@ from geowombat.core.stac import open_stac
 import pandas as pd
 import geopandas as gpd
 from rasterio.enums import Resampling
+# from dask.distributed import Client, LocalCluster, progress
 import xarray as xr
 import pyproj
+from shapely.geometry import CAP_STYLE, JOIN_STYLE
 # from s2cloudless import S2PixelCloudDetector
 import attr
 from tqdm.auto import tqdm
@@ -31,10 +33,11 @@ class Parameters(object):
     """General parameters
     """
     bounds: T.Union[str, Path, T.Sequence[float]] = attr.ib(default=None)
+    bounds_query: str = attr.ib(default=None)
+    bounds_buffer: int = attr.ib(default=0, converter=int)
     out_path: Path = attr.ib(default=None, converter=Path)
     start_date: str = attr.ib(default=None)
     end_date: str = attr.ib(default=None)
-    bounds_query: str = attr.ib(default=None)
     epsg: T.Union[int, None] = attr.ib(default=None)
     resolution: float = attr.ib(default=10, converter=float)
     chunksize: int = attr.ib(default=512, converter=int)
@@ -50,9 +53,14 @@ class Parameters(object):
         # Open a file if passed as a path
         if not isinstance(self.bounds, gpd.GeoDataFrame):
             self.bounds = gpd.read_file(self.bounds)
-
+        # Query a geometry feature subset
         if self.bounds_query is not None:
             self.bounds = self.bounds.query(self.bounds_query)
+        # Buffer the bounds
+        if self.bounds_buffer != 0:
+            self.bounds = self.bounds.buffer(
+                self.bounds_buffer, cap_style=CAP_STYLE.square, join_style=JOIN_STYLE.mitre
+            )
         self.original_crs = self.bounds.crs
         self.proj_bounds = self.bounds.total_bounds.flatten().tolist()
 
@@ -202,19 +210,37 @@ def write_stack(
     if not out_name.is_file():
         # Index by scene id because it is always unique
         scene_idx = data.scene_ids.index(row_id)
+        # (
+        #     data
+        #     .assign_coords(time=pd.DatetimeIndex(data.time.values).round('D'))
+        #     .assign_attrs(crs=data.gw.crs_to_pyproj.to_proj4())
+        #     .isel(time=scene_idx)
+        #     .squeeze()
+        #     .transpose('band', 'y', 'x')
+        #     .gw.to_raster(
+        #         out_name,
+        #         n_workers=n_workers,
+        #         n_threads=threads_per_worker,
+        #         compress='lzw',
+        #         overwrite=True,
+        #         tqdm_kwargs={'position': tqdm_extra_position+2, 'desc': 'Chunks'}
+        #     )
+        # )
         (
             data
             .assign_coords(time=pd.DatetimeIndex(data.time.values).round('D'))
-            .assign_attrs(crs=data.gw.crs_to_pyproj.to_proj4())
+            .assign_attrs(
+                crs=data.gw.crs_to_pyproj.to_proj4(),
+                nodatavals=[NODATA] * data.gw.nbands
+            )
             .isel(time=scene_idx)
             .squeeze()
             .transpose('band', 'y', 'x')
-            .gw.to_raster(
+            .gw.save(
                 out_name,
-                n_workers=n_workers,
-                n_threads=threads_per_worker,
-                compress='lzw',
                 overwrite=True,
+                compression='lzw',
+                num_workers=threads_per_worker,
                 tqdm_kwargs={'position': tqdm_extra_position+2, 'desc': 'Chunks'}
             )
         )
@@ -370,10 +396,11 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
 def download_data(args):
     params = Parameters(
         bounds=args.bounds,
+        bounds_query=args.bounds_query,
+        bounds_buffer=args.bounds_buffer,
         out_path=args.out_path,
         start_date=args.start_date,
         end_date=args.end_date,
-        bounds_query=args.bounds_query,
         epsg=args.epsg,
         resolution=args.resolution,
         cloud_cover_perc=args.cloud_cover_perc,
