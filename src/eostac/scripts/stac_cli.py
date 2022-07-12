@@ -51,6 +51,11 @@ def main():
                 help='A query to select bounds from a file (default: %(default)s)'
             )
             subparser.add_argument(
+                '-bb', '--bounds-buffer', dest='bounds_buffer',
+                help='A buffer to apply around the bounds (default: %(default)s)',
+                default=0, type=int
+            )
+            subparser.add_argument(
                 '--epsg', dest='epsg',
                 help='An EPSG code to transform the data to (default: %(default)s)', default=None
             )
