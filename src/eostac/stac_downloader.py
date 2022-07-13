@@ -18,6 +18,7 @@ from geowombat.core.stac import open_stac
 
 import pandas as pd
 import geopandas as gpd
+from rasterio.errors import RasterBlockError
 from rasterio.enums import Resampling
 # from dask.distributed import Client, LocalCluster, progress
 import xarray as xr
@@ -211,40 +212,27 @@ def write_stack(
     if not out_name.is_file():
         # Index by scene id because it is always unique
         scene_idx = data.scene_ids.index(row_id)
-        # (
-        #     data
-        #     .assign_coords(time=pd.DatetimeIndex(data.time.values).round('D'))
-        #     .assign_attrs(crs=data.gw.crs_to_pyproj.to_proj4())
-        #     .isel(time=scene_idx)
-        #     .squeeze()
-        #     .transpose('band', 'y', 'x')
-        #     .gw.to_raster(
-        #         out_name,
-        #         n_workers=n_workers,
-        #         n_threads=threads_per_worker,
-        #         compress='lzw',
-        #         overwrite=True,
-        #         tqdm_kwargs={'position': tqdm_extra_position+2, 'desc': 'Chunks'}
-        #     )
-        # )
-        (
-            data
-            .assign_coords(time=pd.DatetimeIndex(data.time.values).round('D'))
-            .assign_attrs(
-                crs=data.gw.crs_to_pyproj.to_proj4(),
-                nodatavals=[NODATA] * data.gw.nbands
+        try:
+            (
+                data
+                .assign_coords(time=pd.DatetimeIndex(data.time.values).round('D'))
+                .assign_attrs(
+                    crs=data.gw.crs_to_pyproj.to_proj4(),
+                    nodatavals=[NODATA] * data.gw.nbands
+                )
+                .isel(time=scene_idx)
+                .squeeze()
+                .transpose('band', 'y', 'x')
+                .gw.save(
+                    out_name,
+                    overwrite=True,
+                    compression='lzw',
+                    num_workers=threads_per_worker,
+                    tqdm_kwargs={'position': tqdm_extra_position+2, 'desc': 'Chunks'}
+                )
             )
-            .isel(time=scene_idx)
-            .squeeze()
-            .transpose('band', 'y', 'x')
-            .gw.save(
-                out_name,
-                overwrite=True,
-                compression='lzw',
-                num_workers=threads_per_worker,
-                tqdm_kwargs={'position': tqdm_extra_position+2, 'desc': 'Chunks'}
-            )
-        )
+        except RasterBlockError:
+            raise RasterBlockError('Images with block sizes < 16 cannot be tiled.')
 
 
 def write_time_stack(
