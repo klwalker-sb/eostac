@@ -143,6 +143,7 @@ class Parameters(object):
 
     def build_scene_id(
         self,
+        sensor: str,
         grid_id: str,
         scene_date: str,
         brdf_applied: bool,
@@ -150,7 +151,7 @@ class Parameters(object):
     ) -> str:
         level = 'L3B' if (brdf_applied and bandpass_applied) else 'L3A'
         created = date.today().strftime('%Y%m%d')
-        scene_id = f"{level}_{grid_id}_{scene_date}_{created}_{self.collection}"
+        scene_id = f"{level}_{sensor}_{grid_id}_{scene_date}_{created}_{self.collection}"
 
         return scene_id
 
@@ -274,9 +275,14 @@ def landsat_brdf(
         # Extra the USGS ESPA angle tools to the temporary directory
         angle_paths = extract_espa_tools(gz_tmp)
         for row in scene_info.rename(columns={'mtl.txt': 'metadata'}).itertuples():
+            sensor = row.id.split('_')[0]
             if params.out_path is not None:
-                out_scene_path_l3a = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, True))
-                out_scene_path_l3b = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, False))
+                out_scene_path_l3a = params.get_out_file(
+                    params.build_scene_id(sensor, grid_id, row.date.strftime('%Y%m%d'), True, True)
+                )
+                out_scene_path_l3b = params.get_out_file(
+                    params.build_scene_id(sensor, grid_id, row.date.strftime('%Y%m%d'), True, False)
+                )
                 if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
                     continue
             data_slice = scale_data(
@@ -361,7 +367,9 @@ def landsat_brdf(
 
                         if params.out_path is not None:
                             out_scene_path = params.get_out_file(
-                                params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, bandpass_applied)
+                                params.build_scene_id(
+                                    sensor, grid_id, row.date.strftime('%Y%m%d'), True, bandpass_applied
+                                )
                             )
                             # Write to file
                             getattr(sr_brdf.gw, params.io['method'])(
@@ -402,9 +410,14 @@ def sentinel2_brdf(
     attrs = data.attrs.copy()
     grid_id = params.out_path.name if params.out_path is not None else '000000'
     for row in scene_info.itertuples():
+        sensor = row.id.split('_')[0]
         if params.out_path is not None:
-            out_scene_path_l3a = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, True))
-            out_scene_path_l3b = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, False))
+            out_scene_path_l3a = params.get_out_file(
+                params.build_scene_id(sensor, grid_id, row.date.strftime('%Y%m%d'), True, True)
+            )
+            out_scene_path_l3b = params.get_out_file(
+                params.build_scene_id(sensor, grid_id, row.date.strftime('%Y%m%d'), True, False)
+            )
             if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
                 continue
         data_slice = scale_data(
@@ -469,7 +482,7 @@ def sentinel2_brdf(
 
                 if params.out_path is not None:
                     out_scene_path = params.get_out_file(
-                        params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, bandpass_applied)
+                        params.build_scene_id(sensor, grid_id, row.date.strftime('%Y%m%d'), True, bandpass_applied)
                     )
                     # Write to file
                     getattr(sr_brdf.gw, params.io['method'])(

@@ -96,16 +96,22 @@ eostac brdf \
 > Output BRDF names
 
 ```text
-L<processing level>_<image acquisition date>_<file creation date>_C<collection><extension>
+L<processing level> <sensor>_<image acquisition date>_<file creation date>_C<collection><extension>
 ```
 
-where, 
+where,
 
 * processing level
   * 3A
     * BRDF
   * 3B
     * Bandpass
+* sensor
+  * S2A
+  * LT05
+  * LE07
+  * LC08
+  * LC09
 * image acquisition date
   * YYYYMMDD
 * file creation date
@@ -119,7 +125,7 @@ where,
 Example:
 
 ```text
-L3B_20210104_20220711_C01.tif
+L3B_S2A_20210104_20220711_C01.tif
 ```
 
 ### View scene file information
@@ -165,11 +171,11 @@ file_list = (str(brdf_path) + '/' + df.id + '.tif').values.tolist()
 time_names = df.date.dt.strftime('%Y-%m-%d').values.tolist()
 band_names = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2']
 
-# We use overlap='min' because the nodata values are 32768. 
+# We use overlap='min' because the nodata values are 32768.
 with gw.open(
-    file_list, 
-    time_names=time_names, 
-    band_names=band_names, 
+    file_list,
+    time_names=time_names,
+    band_names=band_names,
     overlap='min'
 ) as src:
     # View RGB of first date
