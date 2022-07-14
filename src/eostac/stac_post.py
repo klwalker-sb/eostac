@@ -29,6 +29,7 @@ from .stac_utils import (
 )
 
 import geowombat as gw
+from geowombat.bin import extract_espa_tools
 from geowombat.radiometry import landsat_pixel_angles, sentinel_pixel_angles
 from geowombat.radiometry import BRDF, LinearAdjustments, RadTransforms
 # from geowombat.ml import predict
@@ -125,8 +126,6 @@ class Parameters(object):
     """
     file_format: FileFormat = attr.ib(default=FileFormat.netcdf)
     out_path: T.Union[str, Path, None] = attr.ib(default=None)
-    l57_angles_path: str = attr.ib(default='/mnt/c/Users/jbgra/Documents/data/nn/ESPA/landsat_angles')
-    l8_angles_path: str = attr.ib(default='/mnt/c/Users/jbgra/Documents/data/nn/ESPA/l8_angles')
     subsample: int = attr.ib(default=10)
     resampling: str = attr.ib(default='bilinear')
     apply_bandpass: bool = attr.ib(default=False)
@@ -185,17 +184,19 @@ def create_image_reference(filename: Path, out_dir: Path, chunks: int):
             'height': src.gw.nrows,
             'count': 1,
             'driver': 'GTiff',
-            'blockxsize': 512,
-            'blockysize': 512,
+            'blockxsize': 256,
+            'blockysize': 256,
             'tiled': True,
             'dtype': 'uint8'
         }
 
-    temp_file = str(out_dir / Path(filename).name)
+    temp_file = out_dir / Path(filename).name
+    if temp_file.is_file():
+        temp_file.unlink()
     with rio.open(temp_file, mode='w', **profile) as dst:
         pass
 
-    return temp_file, ref_info
+    return str(temp_file), ref_info
 
 
 @dataclass
@@ -267,119 +268,123 @@ def landsat_brdf(
     """
     values = []
     attrs = data.attrs.copy()
-    grid_id = params.out_path.name
-    for row in scene_info.rename(columns={'mtl.txt': 'metadata'}).itertuples():
-        out_scene_path_l3a = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, True))
-        out_scene_path_l3b = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, False))
-        if params.out_path is not None:
-            if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
-                continue
-        data_slice = scale_data(
-            data.sel(time=row.date)
-        )
-        data_mask = xr.where(data_slice == NODATA, 0, 1)
+    grid_id = params.out_path.name if params.out_path is not None else '000000'
 
-        metadata = Path(row.metadata)
-        angle_coeff = row.ang
-        filename = metadata.parent / f'{row.id}.tif'
-        assert filename.is_file() and metadata.is_file(), 'The file and metadata must both exist.'
-        meta = RT.get_landsat_coefficients(str(metadata))
-
-        bandpass_applied = False
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            ref_image, ref_info = create_image_reference(
-                filename,
-                Path(tmp_dir),
-                data.gw.row_chunks
+    with tempfile.TemporaryDirectory() as gz_tmp:
+        # Extra the USGS ESPA angle tools to the temporary directory
+        angle_paths = extract_espa_tools(gz_tmp)
+        for row in scene_info.rename(columns={'mtl.txt': 'metadata'}).itertuples():
+            if params.out_path is not None:
+                out_scene_path_l3a = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, True))
+                out_scene_path_l3b = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, False))
+                if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
+                    continue
+            data_slice = scale_data(
+                data.sel(time=row.date)
             )
+            data_mask = xr.where(data_slice == NODATA, 0, 1)
 
-            angle_info = landsat_pixel_angles(
-                angle_coeff,
-                ref_image,
-                str(tmp_dir),
-                meta.sensor,
-                l57_angles_path=params.l57_angles_path,
-                l8_angles_path=params.l8_angles_path,
-                subsample=params.subsample,
-                resampling=params.resampling,
-                num_threads=params.threads_per_worker,
-                verbose=0
-            )
+            metadata = Path(row.metadata)
+            angle_coeff = row.ang
+            filename = metadata.parent / f'{row.id}.tif'
+            assert filename.is_file() and metadata.is_file(), 'The file and metadata must both exist.'
+            meta = RT.get_landsat_coefficients(str(metadata))
 
-            if meta.sensor in ('l8', 'l9'):
-                rad_sensor = f'{meta.sensor}l7'
-            else:
-                rad_sensor = meta.sensor
+            bandpass_applied = False
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                ref_image, ref_info = create_image_reference(
+                    filename,
+                    Path(tmp_dir),
+                    data.gw.row_chunks
+                )
 
-            open_kwargs = {
-                'chunks': data.gw.row_chunks,
-                'resampling': 'bilinear'
-            }
+                angle_info = landsat_pixel_angles(
+                    angle_coeff,
+                    ref_image,
+                    str(tmp_dir),
+                    meta.sensor,
+                    l57_angles_path=str(angle_paths.l57_angles_path),
+                    l8_angles_path=str(angle_paths.l8_angles_path),
+                    subsample=params.subsample,
+                    resampling=params.resampling,
+                    num_workers=params.threads_per_worker,
+                    verbose=0
+                )
 
-            with gw.config.update(
-                sensor=rad_sensor,
-                ref_bounds=ref_info.bounds,
-                ref_crs=ref_info.crs,
-                ref_res=ref_info.res,
-                ignore_warnings=True
-            ):
-                with gw.open(angle_info.sza, **open_kwargs) as sza, \
-                    gw.open(angle_info.vza, **open_kwargs) as vza, \
-                    gw.open(angle_info.saa, **open_kwargs) as saa, \
-                    gw.open(angle_info.vaa, **open_kwargs) as vaa:
-                    # BRDF normalization
-                    sr_brdf = BR.norm_brdf(
-                        data_slice,
-                        sza, saa, vza, vaa,
-                        sensor=rad_sensor,
-                        wavelengths=data.band.values.tolist(),
-                        out_range=DOWN_SCALE,
-                        src_nodata=NODATA,
-                        dst_nodata=NODATA
-                    )
-                    # [0,10000]->[0,1]
-                    sr_brdf = scale_data(sr_brdf)
-                    if params.apply_bandpass:
-                        if data_obj is not None:
-                            coeffs = None
-                            if meta.sensor.lower() in ['l5', 'l7']:
-                                try:
-                                    coeffs = load_dict(str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.json'))
-                                except FileNotFoundError:
-                                    coeffs = None
+                if meta.sensor in ('l8', 'l9'):
+                    rad_sensor = f'{meta.sensor}l7'
+                else:
+                    rad_sensor = meta.sensor
 
-                            if coeffs is not None:
-                                sr_brdf = apply_bandpass(sr_brdf, coeffs)
-                                bandpass_applied = True
+                open_kwargs = {
+                    'chunks': data.gw.row_chunks,
+                    'resampling': 'bilinear'
+                }
 
-                    sr_brdf = finalize_brdf(sr_brdf, data_mask, attrs)
-
-                    if params.out_path is not None:
-                        out_scene_path = params.get_out_file(
-                            params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, bandpass_applied)
+                with gw.config.update(
+                    sensor=rad_sensor,
+                    ref_bounds=ref_info.bounds,
+                    ref_crs=ref_info.crs,
+                    ref_res=ref_info.res,
+                    ignore_warnings=True
+                ):
+                    with gw.open(angle_info.sza, **open_kwargs) as sza, \
+                        gw.open(angle_info.vza, **open_kwargs) as vza, \
+                        gw.open(angle_info.saa, **open_kwargs) as saa, \
+                        gw.open(angle_info.vaa, **open_kwargs) as vaa:
+                        # BRDF normalization
+                        sr_brdf = BR.norm_brdf(
+                            data_slice,
+                            sza, saa, vza, vaa,
+                            sensor=rad_sensor,
+                            wavelengths=data.band.values.tolist(),
+                            out_range=DOWN_SCALE,
+                            src_nodata=NODATA,
+                            dst_nodata=NODATA
                         )
-                        # Write to file
-                        getattr(sr_brdf.gw, params.io['method'])(
-                            out_scene_path,
-                            **params.io['kwargs']
-                        )
-                        # Save the scene info
-                        scene_info = params.out_path / 'scene.info'
-                        df = pd.DataFrame(
-                            data=[[
-                                row.id,
-                                out_scene_path.name,
-                                row.date,
-                                GWSensorNameLookup[meta.sensor].value.value,
-                                True,
-                                bandpass_applied
-                            ]],
-                            columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
-                        )
-                        df, df_download = pickle_scene_info(df, date_pos=3, scene_info=scene_info)
-                    else:
-                        if params.return_data:
-                            values.append(sr_brdf.data.compute(num_workers=params.n_workers))
+                        # [0,10000]->[0,1]
+                        sr_brdf = scale_data(sr_brdf)
+                        if params.apply_bandpass:
+                            if data_obj is not None:
+                                coeffs = None
+                                if meta.sensor.lower() in ['l5', 'l7']:
+                                    try:
+                                        coeffs = load_dict(str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.json'))
+                                    except FileNotFoundError:
+                                        coeffs = None
+
+                                if coeffs is not None:
+                                    sr_brdf = apply_bandpass(sr_brdf, coeffs)
+                                    bandpass_applied = True
+
+                        sr_brdf = finalize_brdf(sr_brdf, data_mask, attrs)
+
+                        if params.out_path is not None:
+                            out_scene_path = params.get_out_file(
+                                params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, bandpass_applied)
+                            )
+                            # Write to file
+                            getattr(sr_brdf.gw, params.io['method'])(
+                                out_scene_path,
+                                **params.io['kwargs']
+                            )
+                            # Save the scene info
+                            scene_info = params.out_path / 'scene.info'
+                            df = pd.DataFrame(
+                                data=[[
+                                    row.id,
+                                    out_scene_path.name,
+                                    row.date,
+                                    GWSensorNameLookup[meta.sensor].value.value,
+                                    True,
+                                    bandpass_applied
+                                ]],
+                                columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
+                            )
+                            df, df_download = pickle_scene_info(df, date_pos=3, scene_info=scene_info)
+                        else:
+                            if params.return_data:
+                                values.append(sr_brdf.data.compute(num_workers=params.n_workers))
 
     if params.return_data:
         return values
@@ -395,11 +400,11 @@ def sentinel2_brdf(
     """
     values = []
     attrs = data.attrs.copy()
-    grid_id = params.out_path.name
+    grid_id = params.out_path.name if params.out_path is not None else '000000'
     for row in scene_info.itertuples():
-        out_scene_path_l3a = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, True))
-        out_scene_path_l3b = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, False))
         if params.out_path is not None:
+            out_scene_path_l3a = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, True))
+            out_scene_path_l3b = params.get_out_file(params.build_scene_id(grid_id, row.date.strftime('%Y%m%d'), True, False))
             if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
                 continue
         data_slice = scale_data(
@@ -424,7 +429,8 @@ def sentinel2_brdf(
                 outdir=str(tmp_dir),
                 nodata=-32768,
                 overwrite=False,
-                verbose=0
+                verbose=0,
+                num_workers=params.threads_per_worker
             )
             rad_sensor = angle_info.sensor + 'l7'
             # bandpass_sensor = angle_info.sensor
