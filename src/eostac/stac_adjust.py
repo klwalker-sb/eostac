@@ -78,7 +78,7 @@ def adjust_data(args):
                           f"--workers {args.workers} " \
                           f"--threads {args.threads} " \
                           "--max-items -1 " \
-                          "--chunksize 4 " \
+                          "--chunksize 256 " \
                           "--tqdm-item-position 1 " \
                           "--tqdm-extra-position 2"
 
