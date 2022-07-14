@@ -253,6 +253,7 @@ def finalize_brdf(sr_brdf: xr.DataArray, data_mask: xr.DataArray, attrs: dict) -
             (sr_brdf*10_000).clip(0, 10_000).astype('uint16'),
             NODATA
         )
+        .transpose('band', 'y', 'x')
         .assign_attrs(**attrs)
         .assign_attrs(nodatavals=(NODATA,)*sr_brdf.gw.nbands)
         .assign_attrs(crs=sr_brdf.gw.crs_to_pyproj.to_proj4())
@@ -799,7 +800,10 @@ def load_data(args):
                             coeffs_path = Path(xy_dict['coeffs_path'][sensor_name.value])
                             if coeffs_path.is_file():
                                 coeffs_data = load_array(coeffs_path)
-                                X = np.concatenate((coeffs_data['X'], X), axis=1)
+                                try:
+                                    X = np.concatenate((coeffs_data['X'], X), axis=1)
+                                except:
+                                    import ipdb;ipdb.set_trace()
                                 y_sensor = np.concatenate((coeffs_data['y'], y), axis=1)
                             else:
                                 y_sensor = y.copy()
