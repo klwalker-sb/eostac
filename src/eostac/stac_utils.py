@@ -150,6 +150,9 @@ class SensorNames(enum.Enum):
     landsat8 = 'lc08'
     landsat9 = 'lc09'
     sentinel2 = 's2a'
+    sentinel2a = 's2a'
+    sentinel2b = 's2b'
+    sentinel2c = 's2c'
 
 
 class GWSensorNameLookup(enum.Enum):
@@ -157,9 +160,10 @@ class GWSensorNameLookup(enum.Enum):
     l7 = SensorNames.landsat7
     l8 = SensorNames.landsat8
     l9 = SensorNames.landsat9
-    s2 = SensorNames.sentinel2
-    s2a = SensorNames.sentinel2
-    s2b = SensorNames.sentinel2
+    s2 = SensorNames.sentinel2a
+    s2a = SensorNames.sentinel2a
+    s2b = SensorNames.sentinel2b
+    s2c = SensorNames.sentinel2c
 
 
 def get_landsat_sensor_name(sensor_id: str):
