@@ -443,7 +443,8 @@ def sentinel2_brdf(
                 nodata=-32768,
                 overwrite=False,
                 verbose=0,
-                num_workers=params.threads_per_worker
+                num_workers=params.threads_per_worker,
+                resample_res=100.0
             )
             rad_sensor = angle_info.sensor + 'l7'
             # bandpass_sensor = angle_info.sensor
