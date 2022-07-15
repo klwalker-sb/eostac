@@ -110,6 +110,7 @@ where,
     * Bandpass
 * sensor
   * S2A
+  * S2B
   * LT05
   * LE07
   * LC08
