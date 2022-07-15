@@ -81,7 +81,7 @@ eostac adjust \
 
 ### Apply BRDF normalization to downloaded surface reflectance
 
-> NOTE: use workers `--workers` with the BRDF process, as dask handles all workers
+> NOTE: use `--workers` and not `--threads` with the BRDF process, as dask handles all workers
 
 ```commandline
 eostac brdf \
