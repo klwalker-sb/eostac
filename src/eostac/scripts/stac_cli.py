@@ -115,6 +115,11 @@ def main():
                 help='Whether to show the regression plots (default: %(default)s)',
                 action='store_true'
             )
+            subparser.add_argument(
+                '--pool-size', dest='pool_size',
+                help='The processing pool size (default: %(default)s)',
+                type=int, default=100
+            )
         elif process == Processes.adjust:
             subparser.add_argument(
                 '--epsg', dest='epsg',

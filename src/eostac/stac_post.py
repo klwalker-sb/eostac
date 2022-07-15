@@ -40,6 +40,7 @@ import xarray as xr
 import rasterio as rio
 from affine import Affine
 import attr
+from tqdm.auto import tqdm
 from tqdm.dask import TqdmCallback
 # import matplotlib.pyplot as plt
 
@@ -153,6 +154,7 @@ class Parameters(object):
     threads_per_worker: int = attr.ib(default=1, converter=int)
     show_plot: bool = attr.ib(default=False)
     collection: str = attr.ib(default='C01')
+    pool_size: int = attr.ib(default=100, converter=int)
 
     def __attrs_post_init__(self):
         if self.out_path is not None:
@@ -324,6 +326,19 @@ def get_metadata_and_filepath(row):
     return metadata, filename
 
 
+def compute_dask_brdf(params: Parameters, io_tasks: list, desc: str, position: int):
+    # Write the files
+    with TqdmCallback(desc=desc, position=position, leave=False):
+        dask.compute(
+            (io_result.write() for io_result in io_tasks.values()),
+            num_workers=params.n_workers
+        )
+    # Cleanup temp directories and close/flush files
+    for tmp_dir, io_result in io_tasks.items():
+        io_result.close()
+        tmp_dir.cleanup()
+
+
 def landsat_brdf(
     data: xr.DataArray,
     scene_info: pd.DataFrame,
@@ -336,7 +351,14 @@ def landsat_brdf(
     with tempfile.TemporaryDirectory() as gz_tmp:
         # Extra the USGS ESPA angle tools to the temporary directory
         angle_paths = extract_espa_tools(gz_tmp)
-        for row in scene_info.rename(columns={'mtl.txt': 'metadata'}).itertuples():
+        for row_idx, row in enumerate(
+            tqdm(
+                scene_info.rename(columns={'mtl.txt': 'metadata'}).itertuples(),
+                total=len(scene_info.index),
+                desc='Landsat angle files',
+                position=2
+            )
+        ):
             sensor = get_sensor_name(row)
             if params.out_path is not None:
                 out_scene_path_l3a, out_scene_path_l3b = get_collection_names(params, sensor, grid_id, row)
@@ -444,21 +466,17 @@ def landsat_brdf(
                             columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
                         )
                         df = pickle_scene_info(df, date_pos=3, scene_info=scene_info)[0]
+
+                        if (row_idx > 0) and (row_idx % params.pool_size == 0):
+                            if io_tasks:
+                                compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
+                                io_tasks = {}
                     else:
                         if params.return_data:
                             values.append(sr_brdf.data.compute(num_workers=params.n_workers))
 
     if io_tasks:
-        # Write the files
-        with TqdmCallback(desc='Landsat BRDF'):
-            dask.compute(
-                (io_result.write() for io_result in io_tasks.values()),
-                num_workers=params.n_workers
-            )
-        # Cleanup temp directories and close/flush files
-        for tmp_dir, io_result in io_tasks.items():
-            io_result.close()
-            tmp_dir.cleanup()
+        compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
 
     if params.return_data:
         return values
@@ -473,7 +491,14 @@ def sentinel2_brdf(
     """Calculates BRDF for Sentinel-2
     """
     open_kwargs, values, attrs, grid_id, io_tasks = brdf_pre_iter(data, params)
-    for row in scene_info.itertuples():
+    for row_idx, row in enumerate(
+        tqdm(
+            scene_info.itertuples(),
+            total=len(scene_info.index),
+            desc='S-2 angle files',
+            position=0
+        )
+    ):
         sensor = get_sensor_name(row)
         if params.out_path is not None:
             out_scene_path_l3a, out_scene_path_l3b = get_collection_names(params, sensor, grid_id, row)
@@ -563,21 +588,17 @@ def sentinel2_brdf(
                     columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
                 )
                 df = pickle_scene_info(df, date_pos=2, scene_info=scene_info)[0]
+
+                if (row_idx > 0) and (row_idx % params.pool_size == 0):
+                    if io_tasks:
+                        compute_dask_brdf(params, io_tasks, 'Sentinel-2 BRDF', position=1)
+                        io_tasks = {}
             else:
                 if params.return_data:
                     values.append(sr_brdf.data.compute(num_workers=params.n_workers))
 
     if io_tasks:
-        # Write the files
-        with TqdmCallback(desc='Sentinel-2 BRDF'):
-            dask.compute(
-                (io_result.write() for io_result in io_tasks.values()),
-                num_workers=params.n_workers
-            )
-        # Cleanup temp directories and close/flush files
-        for tmp_dir, io_result in io_tasks.items():
-            io_result.close()
-            tmp_dir.cleanup()
+        compute_dask_brdf(params, io_tasks, 'Sentinel-2 BRDF', position=1)
 
     if params.return_data:
         return values
@@ -682,7 +703,8 @@ def load_data(args):
         return_data=True if args.get_coeffs else False,
         n_workers=args.workers,
         threads_per_worker=args.threads,
-        show_plot=args.show_plot
+        show_plot=args.show_plot,
+        pool_size=args.pool_size
     )
     landsat_params = LandsatParams(
         out_path=data_obj.landsat_path
