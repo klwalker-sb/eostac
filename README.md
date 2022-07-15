@@ -81,6 +81,8 @@ eostac adjust \
 
 ### Apply BRDF normalization to downloaded surface reflectance
 
+> NOTE: use workers `--workers` with the BRDF process, as dask handles all workers
+
 ```commandline
 eostac brdf \
     --start-date 2020-01-01 \
@@ -90,7 +92,7 @@ eostac brdf \
     --coeffs-path /eostac/files/coefficients/ \
     --file-format geotiff \
     --apply-bandpass \
-    --threads 8
+    --workers 8
 ```
 
 > Output BRDF names
