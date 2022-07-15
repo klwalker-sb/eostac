@@ -98,7 +98,7 @@ eostac brdf \
 > Output BRDF names
 
 ```text
-L<processing level> <sensor>_<image acquisition date>_<file creation date>_C<collection><extension>
+L<processing level>_<sensor>_<image acquisition date>_<file creation date>_C<collection><extension>
 ```
 
 where,
