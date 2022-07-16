@@ -56,7 +56,7 @@ def get_lin_coefficients(
     out_fig: T.Union[str, Path] = None
 ):
     sns.set_style('whitegrid')
-    fig, axes = plt.subplots(2, 3, figsize=(8, 4), dpi=100, sharex=True, sharey=True)
+    fig, axes = plt.subplots(2, 3, figsize=(8, 4), dpi=100)
     axes = axes.flatten()
     sns.despine(fig=fig)
 
@@ -92,46 +92,49 @@ def get_lin_coefficients(
         # yhat = X*beta + alpha
         yhat = xsite*float(reg.coef_) + float(reg.intercept_)
 
-        if show_plot:
-            ax.scatter(
-                xsite,
-                ysite,
-                s=10,
-                c='k',
-                ec='none',
-                alpha=0.5
-            )
-            ax.scatter(
-                yhat,
-                ysite,
-                s=10,
-                c=color,
-                ec='white',
-                lw=0.1,
-                alpha=0.5
-            )
-            # ax.hexbin(
-            #     yhat,
-            #     (10 ** ysite) * UP_SCALE,
-            #     gridsize=10,
-            #     cmap='plasma'
-            # )
-            ax.plot(
-                [0, 1],
-                [0, 1],
-                color='grey',
-                lw=1,
-                ls='-',
-                solid_capstyle='round'
-            )
-            ax.set_title(title)
-            plt.suptitle(plot_title)
-            ax.set_xlim(0, 0.55)
-            ax.set_ylim(0, 0.55)
+        ax.scatter(
+            xsite,
+            ysite,
+            s=10,
+            c='k',
+            ec='none',
+            alpha=0.5
+        )
+        ax.scatter(
+            yhat,
+            ysite,
+            s=10,
+            c=color,
+            ec='white',
+            lw=0.1,
+            alpha=0.5
+        )
+        # ax.hexbin(
+        #     yhat,
+        #     (10 ** ysite) * UP_SCALE,
+        #     gridsize=10,
+        #     cmap='plasma'
+        # )
+        ax.plot(
+            [0, 1],
+            [0, 1],
+            color='grey',
+            lw=1,
+            ls='-',
+            solid_capstyle='round'
+        )
+        ax.set_title(title)
+        plt.suptitle(plot_title)
+
+        data_min = np.clip(np.concatenate((yhat, ysite)).min() - 0.05, 0, 1)
+        data_max = np.clip(np.concatenate((yhat, ysite)).max() + 0.05, 0, 1)
+
+        ax.set_xlim(data_min, data_max)
+        ax.set_ylim(data_min, data_max)
 
         coeffs[title] = {
-            'slope': float(reg.coef_),
-            'intercept': float(reg.intercept_)
+            'beta': float(reg.coef_),
+            'alpha': float(reg.intercept_)
         }
 
     if out_fig is not None:
@@ -175,7 +178,7 @@ def get_landsat_sensor_name(sensor_id: str):
 
 
 def save_dict(data_file: T.Union[str, Path], data: dict):
-    with open(str(data_file), mode='w') as f:
+    with open(str(data_file).replace('.npz', '.json'), mode='w') as f:
         json.dump(data, f, indent=4)
 
 

@@ -24,17 +24,17 @@ def create_polygon(x: float, y: float, dist: float) -> Polygon:
 
 
 def adjust_data(args):
-    df = gpd.read_file(args.geometry)
+    df_region = gpd.read_file(args.geometry)
 
     # Get random x,y coordinates
-    x_min, y_min, x_max, y_max = df.total_bounds
+    x_min, y_min, x_max, y_max = df_region.total_bounds
     rng = np.random.default_rng(100)
     x = rng.uniform(x_min, x_max, 50_000)
     y = rng.uniform(y_min, y_max, 50_000)
     # Convert them to a points GeoSeries
-    points = gpd.GeoSeries(gpd.points_from_xy(x, y, crs=df.crs))
+    points = gpd.GeoSeries(gpd.points_from_xy(x, y, crs=df_region.crs))
     # Clips the points to the geometry of interest
-    points = points[points.within(df.unary_union)]
+    points = points[points.within(df_region.unary_union)]
     # Get a spatially balanced sample
     qt = QuadTree(points)
     qt.split_recursive(max_samples=10)
@@ -90,7 +90,11 @@ def adjust_data(args):
         for row in tqdm(df.itertuples(), total=len(df.index), position=0, desc='Sample'):
             id_path = str(Path(args.out_path) / f"{row.unique_id:06d}")
             com = "eostac brdf " \
+                  f"--start-date {args.start_date} " \
+                  f"--end-date {args.end_date} " \
                   f"--project-path {id_path} " \
+                  f"--workers {args.workers} " \
+                  f"--threads {args.threads} " \
                   "--get-coeffs"
 
             subprocess.call(com, shell=True)

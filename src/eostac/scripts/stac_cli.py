@@ -111,6 +111,10 @@ def main():
                 help='The path where coefficient files are stored (default: %(default)s)'
             )
             subparser.add_argument(
+                '--coeffs-prefix', dest='coeffs_prefix', default='pry_',
+                help='The coefficient prefix (default: %(default)s)'
+            )
+            subparser.add_argument(
                 '--show-plot', dest='show_plot',
                 help='Whether to show the regression plots (default: %(default)s)',
                 action='store_true'

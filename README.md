@@ -56,10 +56,12 @@ eostac adjust \
     --end-date 2013-14-01 \
     --out-path /coefficients \
     --geometry /PRY_adm.zip \
-    --n-samples 10 \
+    --n-samples 50 \
+    --resample 30.0 \
     --freq Y \
-    --freq-repeat 9 \
-    --threads 8 \
+    --freq-repeat 10 \
+    --workers 4 \
+    --threads 2 \
     --epsg 8858
 ```
 
@@ -68,14 +70,11 @@ eostac adjust \
 ```commandline
 eostac adjust \
     --start-date 2013-01-01 \
-    --end-date 2013-14-01 \
+    --end-date 2023-01-01 \
     --out-path /coefficients \
     --geometry /PRY_adm.zip \
-    --n-samples 10 \
-    --freq Y \
-    --freq-repeat 9 \
+    --n-samples 50 \
     --threads 8 \
-    --epsg 8858 \
     --regress
 ```
 
@@ -90,6 +89,7 @@ eostac brdf \
     --project-path /downloads/000001 \
     --out-path /brdf/000001 \
     --coeffs-path /eostac/files/coefficients/ \
+    --coeffs-prefix pry_ \
     --file-format geotiff \
     --apply-bandpass \
     --workers 8

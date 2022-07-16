@@ -242,10 +242,10 @@ def apply_bandpass(data: xr.DataArray, coeffs: dict) -> xr.DataArray:
     """
     attrs = data.attrs.copy()
     alphas = np.array(
-        [coeffs[band]['intercept'] for band in data.band.values], dtype='float64'
+        [coeffs[band]['alpha'] for band in data.band.values], dtype='float64'
     )
     betas = np.array(
-        [coeffs[band]['slope'] for band in data.band.values], dtype='float64'
+        [coeffs[band]['beta'] for band in data.band.values], dtype='float64'
     )
 
     alphas = xr.DataArray(
@@ -326,6 +326,14 @@ def get_metadata_and_filepath(row):
     return metadata, filename
 
 
+def cleanup_tmp(io_tasks: dict):
+    # Cleanup temp directories and close/flush files
+    for tmp_dir, io_result in io_tasks.items():
+        if not isinstance(io_result, int):
+            io_result.close()
+        tmp_dir.cleanup()
+
+
 def compute_dask_brdf(params: Parameters, io_tasks: list, desc: str, position: int):
     # Write the files
     with TqdmCallback(desc=desc, position=position, leave=False):
@@ -333,10 +341,7 @@ def compute_dask_brdf(params: Parameters, io_tasks: list, desc: str, position: i
             (io_result.write() for io_result in io_tasks.values()),
             num_workers=params.n_workers
         )
-    # Cleanup temp directories and close/flush files
-    for tmp_dir, io_result in io_tasks.items():
-        io_result.close()
-        tmp_dir.cleanup()
+    cleanup_tmp(io_tasks)
 
 
 def landsat_brdf(
@@ -353,7 +358,7 @@ def landsat_brdf(
         angle_paths = extract_espa_tools(gz_tmp)
         for row_idx, row in enumerate(
             tqdm(
-                scene_info.rename(columns={'mtl.txt': 'metadata'}).itertuples(),
+                scene_info.rename(columns={'mtl_txt': 'metadata'}).itertuples(),
                 total=len(scene_info.index),
                 desc='Landsat angle files',
                 position=2
@@ -472,11 +477,15 @@ def landsat_brdf(
                                 compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
                                 io_tasks = {}
                     else:
+                        io_tasks[tmp_dir] = 1
                         if params.return_data:
                             values.append(sr_brdf.data.compute(num_workers=params.n_workers))
 
-    if io_tasks:
-        compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
+    if params.out_path is not None:
+        if io_tasks:
+            compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
+    else:
+        cleanup_tmp(io_tasks)
 
     if params.return_data:
         return values
@@ -594,11 +603,15 @@ def sentinel2_brdf(
                         compute_dask_brdf(params, io_tasks, 'Sentinel-2 BRDF', position=1)
                         io_tasks = {}
             else:
+                io_tasks[tmp_dir] = 1
                 if params.return_data:
                     values.append(sr_brdf.data.compute(num_workers=params.n_workers))
 
-    if io_tasks:
-        compute_dask_brdf(params, io_tasks, 'Sentinel-2 BRDF', position=1)
+    if params.out_path is not None:
+        if io_tasks:
+            compute_dask_brdf(params, io_tasks, 'Sentinel-2 BRDF', position=1)
+    else:
+        cleanup_tmp(io_tasks)
 
     if params.return_data:
         return values
@@ -627,10 +640,18 @@ def setup_paths(args) -> Data:
     else:
         project_parent = Path(args.coeffs_path)
 
-    l5_to_l8_coeffs_path = SensorPaths(project_parent).l5_to_l8_coefficients
-    l7_to_l8_coeffs_path = SensorPaths(project_parent).l7_to_l8_coefficients
-    l9_to_l8_coeffs_path = SensorPaths(project_parent).l9_to_l8_coefficients
-    s2_to_l8_coeffs_path = SensorPaths(project_parent).s2_to_l8_coefficients
+    l5_to_l8_coeffs_path = (
+        SensorPaths(project_parent).out_path / f'{args.coeffs_prefix}{SensorPaths(project_parent).l5_to_l8_coefficients.name}'
+    )
+    l7_to_l8_coeffs_path = (
+        SensorPaths(project_parent).out_path / f'{args.coeffs_prefix}{SensorPaths(project_parent).l7_to_l8_coefficients.name}'
+    )
+    l9_to_l8_coeffs_path = (
+        SensorPaths(project_parent).out_path / f'{args.coeffs_prefix}{SensorPaths(project_parent).l9_to_l8_coefficients.name}'
+    )
+    s2_to_l8_coeffs_path = (
+        SensorPaths(project_parent).out_path / f'{args.coeffs_prefix}{SensorPaths(project_parent).s2_to_l8_coefficients.name}'
+    )
 
     landsat_path = SensorPaths(args.project_path).landsat
     sentinel2_path = SensorPaths(args.project_path).sentinel2
@@ -649,8 +670,8 @@ def setup_paths(args) -> Data:
         mtl_xml = [str(landsat_path / Path(landsat_df.iloc[i]['mtl.xml']).name) for i in range(len(landsat_df.index))]
         landsat_df = landsat_df.assign(**{
             'ang': ang,
-            'mtl.txt': mtl_txt,
-            'mtl.xml': mtl_xml
+            'mtl_txt': mtl_txt,
+            'mtl_xml': mtl_xml
         })
     if sentinel2_scene_info.is_file():
         sentinel2_df = read_df(sentinel2_scene_info)
@@ -719,7 +740,7 @@ def load_data(args):
         else:
             data_obj.landsat_df = (
                 data_obj.landsat_df
-                .rename(columns={'mtl.txt': 'metadata'})
+                .rename(columns={'mtl_txt': 'metadata'})
                 .loc[:, ['id', 'metadata', 'ang', 'date']]
             )
             data_obj.landsat_df = data_obj.landsat_df.assign(
@@ -892,10 +913,7 @@ def load_data(args):
                             coeffs_path = Path(xy_dict['coeffs_path'][sensor_name.value])
                             if coeffs_path.is_file():
                                 coeffs_data = load_array(coeffs_path)
-                                try:
-                                    X = np.concatenate((coeffs_data['X'], X), axis=1)
-                                except:
-                                    import ipdb;ipdb.set_trace()
+                                X = np.concatenate((coeffs_data['X'], X), axis=1)
                                 y_sensor = np.concatenate((coeffs_data['y'], y), axis=1)
                             else:
                                 y_sensor = y.copy()
@@ -911,7 +929,7 @@ def load_data(args):
                     show_plot=params.show_plot,
                     out_fig=str(data_obj.l5_to_l8_coeffs_path).replace('.npz', '.png')
                 )
-                save_dict(str(data_obj.l5_to_l8_coeffs_path).replace('.npz', '.json'), coeffs)
+                save_dict(data_obj.l5_to_l8_coeffs_path, coeffs)
             if data_obj.l7_to_l8_coeffs_path.is_file():
                 coeffs_data = load_array(data_obj.l7_to_l8_coeffs_path)
                 coeffs = get_lin_coefficients(
@@ -922,7 +940,7 @@ def load_data(args):
                     show_plot=params.show_plot,
                     out_fig=str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.png')
                 )
-                save_dict(str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.json'), coeffs)
+                save_dict(data_obj.l7_to_l8_coeffs_path, coeffs)
             if data_obj.s2_to_l8_coeffs_path.is_file():
                 coeffs_data = load_array(data_obj.s2_to_l8_coeffs_path)
                 coeffs = get_lin_coefficients(
@@ -933,7 +951,7 @@ def load_data(args):
                     show_plot=params.show_plot,
                     out_fig=str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.png')
                 )
-                save_dict(str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.json'), coeffs)
+                save_dict(data_obj.s2_to_l8_coeffs_path, coeffs)
 
     else:
         if data_obj.sentinel2_files:
