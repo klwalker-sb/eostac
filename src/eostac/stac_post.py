@@ -962,18 +962,18 @@ def load_data(args):
                 save_dict(data_obj.s2_to_l8_coeffs_path, coeffs)
 
     else:
-        # if data_obj.sentinel2_files:
-        #     with gw.open(
-        #         data_obj.sentinel2_files,
-        #         time_names=data_obj.sentinel2_dates,
-        #         band_names=[Sentinel2Bands(band).name for band in sentinel2_params.bands if band != Sentinel2Bands.scl.value]
-        #     ) as data_s2:
-        #         sentinel2_brdf(
-        #             data_s2,
-        #             data_obj.sentinel2_df,
-        #             params,
-        #             data_obj=data_obj
-        #         )
+        if data_obj.sentinel2_files:
+            with gw.open(
+                data_obj.sentinel2_files,
+                time_names=data_obj.sentinel2_dates,
+                band_names=[Sentinel2Bands(band).name for band in sentinel2_params.bands if band != Sentinel2Bands.scl.value]
+            ) as data_s2:
+                sentinel2_brdf(
+                    data_s2,
+                    data_obj.sentinel2_df,
+                    params,
+                    data_obj=data_obj
+                )
         if data_obj.landsat_files:
             with gw.open(
                 data_obj.landsat_files,
