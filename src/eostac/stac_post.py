@@ -3,6 +3,7 @@ import tempfile
 from collections import namedtuple
 import enum
 from dataclasses import dataclass
+from turtle import pos
 import typing as T
 import warnings
 from datetime import date
@@ -30,15 +31,24 @@ from .stac_utils import (
 
 import geowombat as gw
 from geowombat.bin import extract_espa_tools
-from geowombat.radiometry import landsat_pixel_angles, sentinel_pixel_angles
-from geowombat.radiometry import BRDF, LinearAdjustments, RadTransforms
+from geowombat.radiometry import (
+    landsat_pixel_angles,
+    sentinel_pixel_angles,
+    BRDF,
+    LinearAdjustments,
+    RadTransforms
+)
+from geowombat.radiometry.angles import get_sentinel_sensor
+from geowombat.backends.xarray_rasterio_ import open_rasterio
 # from geowombat.ml import predict
 import numpy as np
 import pandas as pd
 import dask
+import dask.array as da
 import xarray as xr
 import rasterio as rio
 from affine import Affine
+from threadpoolctl import threadpool_limits
 import attr
 from tqdm.auto import tqdm
 from tqdm.dask import TqdmCallback
@@ -326,11 +336,9 @@ def get_metadata_and_filepath(row):
     return metadata, filename
 
 
-def cleanup_tmp(io_tasks: dict):
-    # Cleanup temp directories and close/flush files
-    for tmp_dir, io_result in io_tasks.items():
-        if not isinstance(io_result, int):
-            io_result.close()
+def cleanup_tmp(params: Parameters, io_tasks: dict):
+    # Cleanup temp directories
+    for tmp_dir in io_tasks.keys():
         tmp_dir.cleanup()
 
 
@@ -338,10 +346,11 @@ def compute_dask_brdf(params: Parameters, io_tasks: list, desc: str, position: i
     # Write the files
     with TqdmCallback(desc=desc, position=position, leave=False):
         dask.compute(
-            (io_result.write() for io_result in io_tasks.values()),
+            list(io_tasks.values()),
             num_workers=params.n_workers
         )
-    cleanup_tmp(io_tasks)
+
+    cleanup_tmp(params, io_tasks)
 
 
 def landsat_brdf(
@@ -353,15 +362,159 @@ def landsat_brdf(
     """Calculates BRDF for Landsat
     """
     open_kwargs, values, attrs, grid_id, io_tasks = brdf_pre_iter(data, params)
-    with tempfile.TemporaryDirectory() as gz_tmp:
-        # Extra the USGS ESPA angle tools to the temporary directory
-        angle_paths = extract_espa_tools(gz_tmp)
+    with threadpool_limits(limits=1, user_api='blas'):
+        with tempfile.TemporaryDirectory() as gz_tmp:
+            # Extra the USGS ESPA angle tools to the temporary directory
+            angle_paths = extract_espa_tools(gz_tmp)
+            for row_idx, row in enumerate(
+                tqdm(
+                    scene_info.rename(columns={'mtl_txt': 'metadata'}).itertuples(),
+                    total=len(scene_info.index),
+                    desc='Landsat angle files',
+                    position=2
+                )
+            ):
+                sensor = get_sensor_name(row)
+                if params.out_path is not None:
+                    out_scene_path_l3a, out_scene_path_l3b = get_collection_names(params, sensor, grid_id, row)
+                    if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
+                        continue
+                # Scale the data to [0,1] and get the mask
+                data_slice, data_mask = slice_and_mask(data, row)
+
+                metadata, filename = get_metadata_and_filepath(row)
+                assert filename.is_file() and metadata.is_file(), \
+                    'Both the image and metadata files must exist.'
+
+                # Create a temporary directory to save files to
+                tmp_dir = tempfile.TemporaryDirectory()
+                meta = RT.get_landsat_coefficients(str(metadata))
+                angle_coeff = row.ang
+                bandpass_applied = False
+                # Create an image reference for the angle files
+                ref_image, ref_info = create_image_reference(
+                    filename,
+                    Path(tmp_dir.name),
+                    data.gw.row_chunks
+                )
+                # Create the angle files
+                angle_info = landsat_pixel_angles(
+                    angle_coeff,
+                    ref_image,
+                    tmp_dir.name,
+                    meta.sensor,
+                    l57_angles_path=str(angle_paths.l57_angles_path),
+                    l8_angles_path=str(angle_paths.l8_angles_path),
+                    subsample=params.subsample,
+                    resampling=params.resampling,
+                    num_workers=params.threads_per_worker,
+                    verbose=0
+                )
+
+                if meta.sensor in ('l8', 'l9'):
+                    rad_sensor = f'{meta.sensor}l7'
+                else:
+                    rad_sensor = meta.sensor
+
+                vaa = dask.delayed(open_rasterio)(angle_info.vaa, **open_kwargs)
+                vza = dask.delayed(open_rasterio)(angle_info.vza, **open_kwargs)
+                saa = dask.delayed(open_rasterio)(angle_info.saa, **open_kwargs)
+                sza = dask.delayed(open_rasterio)(angle_info.sza, **open_kwargs)
+
+                # BRDF normalization
+                sr_brdf = dask.delayed(BR.norm_brdf)(
+                    data_slice,
+                    sza, saa, vza, vaa,
+                    sensor=rad_sensor,
+                    wavelengths=data.band.values.tolist(),
+                    out_range=DOWN_SCALE,
+                    src_nodata=NODATA,
+                    dst_nodata=NODATA
+                )
+                # [0,10000]->[0,1]
+                sr_brdf = dask.delayed(scale_data)(sr_brdf)
+                if params.apply_bandpass:
+                    if data_obj is not None:
+                        coeffs = None
+                        if meta.sensor.lower() in ['l5', 'l7']:
+                            try:
+                                coeffs = dask.delayed(load_dict)(
+                                    str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.json')
+                                )
+                            except FileNotFoundError:
+                                coeffs = None
+
+                        if coeffs is not None:
+                            sr_brdf = dask.delayed(apply_bandpass)(sr_brdf, coeffs)
+                            bandpass_applied = True
+                # Finalize the attributes
+                sr_brdf = dask.delayed(finalize_brdf)(sr_brdf, data_mask, attrs)
+                if params.out_path is not None:
+                    out_scene_path = params.get_out_file(
+                        params.build_scene_id(
+                            sensor, grid_id, row.date.strftime('%Y%m%d'), True, bandpass_applied
+                        )
+                    )
+                    # Get a dask.delayed object to the task graph
+                    rio_store = dask.delayed(
+                        getattr(sr_brdf.gw, params.io['method'])
+                    )(
+                        out_scene_path,
+                        log_progress=False,
+                        **params.io['kwargs']
+                    )
+                    io_tasks[tmp_dir] = rio_store
+
+                    # Save the scene info
+                    scene_info = params.out_path / 'scene.info'
+                    df = pd.DataFrame(
+                        data=[[
+                            row.id,
+                            out_scene_path.name,
+                            row.date,
+                            GWSensorNameLookup[meta.sensor].value.value,
+                            True,
+                            bandpass_applied
+                        ]],
+                        columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
+                    )
+                    df = pickle_scene_info(df, date_pos=3, scene_info=scene_info)[0]
+
+                    if (row_idx > 0) and (row_idx % params.pool_size == 0):
+                        if io_tasks:
+                            compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
+                            io_tasks = {}
+                else:
+                    io_tasks[tmp_dir] = 1
+                    if params.return_data:
+                        values.append(sr_brdf.data.compute(num_workers=params.n_workers))
+
+            if params.out_path is not None:
+                if io_tasks:
+                    compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
+            else:
+                cleanup_tmp(params, io_tasks)
+
+    if params.return_data:
+        return values
+
+
+def sentinel2_brdf(
+    data: xr.DataArray,
+    scene_info: pd.DataFrame,
+    params: Parameters,
+    data_obj: T.Optional[Data] = None
+):
+    """Calculates BRDF for Sentinel-2
+    """
+    open_kwargs, values, attrs, grid_id, io_tasks = brdf_pre_iter(data, params)
+    with threadpool_limits(limits=1, user_api='blas'):
         for row_idx, row in enumerate(
             tqdm(
-                scene_info.rename(columns={'mtl_txt': 'metadata'}).itertuples(),
+                scene_info.itertuples(),
                 total=len(scene_info.index),
-                desc='Landsat angle files',
-                position=2
+                desc='S-2 angle files',
+                position=0
             )
         ):
             sensor = get_sensor_name(row)
@@ -378,179 +531,32 @@ def landsat_brdf(
 
             # Create a temporary directory to save files to
             tmp_dir = tempfile.TemporaryDirectory()
-            meta = RT.get_landsat_coefficients(str(metadata))
-            angle_coeff = row.ang
             bandpass_applied = False
             # Create an image reference for the angle files
-            ref_image, ref_info = create_image_reference(
+            ref_image = create_image_reference(
                 filename,
                 Path(tmp_dir.name),
                 data.gw.row_chunks
-            )
+            )[0]
             # Create the angle files
-            angle_info = landsat_pixel_angles(
-                angle_coeff,
+            angle_data = sentinel_pixel_angles(
+                metadata,
                 ref_image,
-                tmp_dir.name,
-                meta.sensor,
-                l57_angles_path=str(angle_paths.l57_angles_path),
-                l8_angles_path=str(angle_paths.l8_angles_path),
-                subsample=params.subsample,
-                resampling=params.resampling,
+                nodata=-32768,
                 num_workers=params.threads_per_worker,
-                verbose=0
+                resample_res=100.0,
+                chunksize=(data.gw.row_chunks, data.gw.col_chunks)
             )
-
-            if meta.sensor in ('l8', 'l9'):
-                rad_sensor = f'{meta.sensor}l7'
-            else:
-                rad_sensor = meta.sensor
-
-            with gw.config.update(
-                sensor=rad_sensor,
-                ref_bounds=ref_info.bounds,
-                ref_crs=ref_info.crs,
-                ref_res=ref_info.res,
-                ignore_warnings=True
-            ):
-                with gw.open(angle_info.sza, **open_kwargs) as sza, \
-                    gw.open(angle_info.vza, **open_kwargs) as vza, \
-                    gw.open(angle_info.saa, **open_kwargs) as saa, \
-                    gw.open(angle_info.vaa, **open_kwargs) as vaa:
-                    # BRDF normalization
-                    sr_brdf = BR.norm_brdf(
-                        data_slice,
-                        sza, saa, vza, vaa,
-                        sensor=rad_sensor,
-                        wavelengths=data.band.values.tolist(),
-                        out_range=DOWN_SCALE,
-                        src_nodata=NODATA,
-                        dst_nodata=NODATA
-                    )
-                    # [0,10000]->[0,1]
-                    sr_brdf = scale_data(sr_brdf)
-                    if params.apply_bandpass:
-                        if data_obj is not None:
-                            coeffs = None
-                            if meta.sensor.lower() in ['l5', 'l7']:
-                                try:
-                                    coeffs = load_dict(str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.json'))
-                                except FileNotFoundError:
-                                    coeffs = None
-
-                            if coeffs is not None:
-                                sr_brdf = apply_bandpass(sr_brdf, coeffs)
-                                bandpass_applied = True
-                    # Finalize the attributes
-                    sr_brdf = finalize_brdf(sr_brdf, data_mask, attrs)
-                    if params.out_path is not None:
-                        out_scene_path = params.get_out_file(
-                            params.build_scene_id(
-                                sensor, grid_id, row.date.strftime('%Y%m%d'), True, bandpass_applied
-                            )
-                        )
-                        # Get a dask.delayed object to the task graph
-                        rio_store = getattr(sr_brdf.gw, params.io['method'])(
-                            out_scene_path,
-                            compute=False,
-                            **params.io['kwargs']
-                        )
-                        io_tasks[tmp_dir] = rio_store
-
-                        # Save the scene info
-                        scene_info = params.out_path / 'scene.info'
-                        df = pd.DataFrame(
-                            data=[[
-                                row.id,
-                                out_scene_path.name,
-                                row.date,
-                                GWSensorNameLookup[meta.sensor].value.value,
-                                True,
-                                bandpass_applied
-                            ]],
-                            columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
-                        )
-                        df = pickle_scene_info(df, date_pos=3, scene_info=scene_info)[0]
-
-                        if (row_idx > 0) and (row_idx % params.pool_size == 0):
-                            if io_tasks:
-                                compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
-                                io_tasks = {}
-                    else:
-                        io_tasks[tmp_dir] = 1
-                        if params.return_data:
-                            values.append(sr_brdf.data.compute(num_workers=params.n_workers))
-
-    if params.out_path is not None:
-        if io_tasks:
-            compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
-    else:
-        cleanup_tmp(io_tasks)
-
-    if params.return_data:
-        return values
-
-
-def sentinel2_brdf(
-    data: xr.DataArray,
-    scene_info: pd.DataFrame,
-    params: Parameters,
-    data_obj: T.Optional[Data] = None
-):
-    """Calculates BRDF for Sentinel-2
-    """
-    open_kwargs, values, attrs, grid_id, io_tasks = brdf_pre_iter(data, params)
-    for row_idx, row in enumerate(
-        tqdm(
-            scene_info.itertuples(),
-            total=len(scene_info.index),
-            desc='S-2 angle files',
-            position=0
-        )
-    ):
-        sensor = get_sensor_name(row)
-        if params.out_path is not None:
-            out_scene_path_l3a, out_scene_path_l3b = get_collection_names(params, sensor, grid_id, row)
-            if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
-                continue
-        # Scale the data to [0,1] and get the mask
-        data_slice, data_mask = slice_and_mask(data, row)
-
-        metadata, filename = get_metadata_and_filepath(row)
-        assert filename.is_file() and metadata.is_file(), \
-            'Both the image and metadata files must exist.'
-
-        # Create a temporary directory to save files to
-        tmp_dir = tempfile.TemporaryDirectory()
-        bandpass_applied = False
-        # Create an image reference for the angle files
-        ref_image = create_image_reference(
-            filename,
-            Path(tmp_dir.name),
-            data.gw.row_chunks
-        )[0]
-        # Create the angle files
-        angle_info = sentinel_pixel_angles(
-            metadata,
-            ref_image,
-            outdir=tmp_dir.name,
-            nodata=-32768,
-            overwrite=False,
-            verbose=0,
-            num_workers=params.threads_per_worker,
-            resample_res=100.0
-        )
-        # Sentinel-2 Landsat-like
-        rad_sensor = angle_info.sensor + 'l7'
-        # Open the angle files
-        with gw.open(angle_info.sza, **open_kwargs) as sza, \
-            gw.open(angle_info.vza, **open_kwargs) as vza, \
-            gw.open(angle_info.saa, **open_kwargs) as saa, \
-            gw.open(angle_info.vaa, **open_kwargs) as vaa:
+            # Sentinel-2 Landsat-like
+            s2_sensor = get_sentinel_sensor(metadata)
+            rad_sensor = s2_sensor + 'l7'
             # BRDF normalization
-            sr_brdf = BR.norm_brdf(
+            sr_brdf = dask.delayed(BR.norm_brdf)(
                 data_slice,
-                sza, saa, vza, vaa,
+                angle_data.sza,
+                angle_data.saa,
+                angle_data.vza,
+                angle_data.vaa,
                 sensor=rad_sensor,
                 wavelengths=data.band.values.tolist(),
                 out_range=DOWN_SCALE,
@@ -558,29 +564,31 @@ def sentinel2_brdf(
                 dst_nodata=NODATA
             )
             # [0,10000]->[0,1]
-            sr_brdf = scale_data(sr_brdf)
+            sr_brdf = dask.delayed(scale_data)(sr_brdf)
             if params.apply_bandpass:
                 if data_obj is not None:
                     try:
-                        coeffs = load_dict(str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.json'))
+                        coeffs = dask.delayed(load_dict)(
+                            str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.json')
+                        )
                     except FileNotFoundError:
                         coeffs = None
 
                     if coeffs is not None:
-                        sr_brdf = apply_bandpass(sr_brdf, coeffs)
+                        sr_brdf = dask.delayed(apply_bandpass)(sr_brdf, coeffs)
                         bandpass_applied = True
+
             # Finalize the attributes
-            sr_brdf = finalize_brdf(sr_brdf, data_mask, attrs)
+            sr_brdf = dask.delayed(finalize_brdf)(sr_brdf, data_mask, attrs)
             if params.out_path is not None:
                 out_scene_path = params.get_out_file(
                     params.build_scene_id(sensor, grid_id, row.date.strftime('%Y%m%d'), True, bandpass_applied)
                 )
                 # Get a dask.delayed object to the task graph
-                rio_store = getattr(sr_brdf.gw, params.io['method'])(
-                    out_scene_path,
-                    compute=False,
-                    **params.io['kwargs']
-                )
+                rio_store = dask.delayed(
+                    getattr(sr_brdf.gw, params.io['method'])
+                )(out_scene_path, log_progress=False, **params.io['kwargs'])
+
                 io_tasks[tmp_dir] = rio_store
 
                 # Save the scene info
@@ -590,7 +598,7 @@ def sentinel2_brdf(
                         row.id,
                         out_scene_path.name,
                         row.date,
-                        GWSensorNameLookup[angle_info.sensor].value.value,
+                        GWSensorNameLookup[s2_sensor].value.value,
                         True,
                         bandpass_applied
                     ]],
@@ -607,11 +615,11 @@ def sentinel2_brdf(
                 if params.return_data:
                     values.append(sr_brdf.data.compute(num_workers=params.n_workers))
 
-    if params.out_path is not None:
-        if io_tasks:
-            compute_dask_brdf(params, io_tasks, 'Sentinel-2 BRDF', position=1)
-    else:
-        cleanup_tmp(io_tasks)
+        if params.out_path is not None:
+            if io_tasks:
+                compute_dask_brdf(params, io_tasks, 'Sentinel-2 BRDF', position=1)
+        else:
+            cleanup_tmp(params, io_tasks)
 
     if params.return_data:
         return values
@@ -954,18 +962,18 @@ def load_data(args):
                 save_dict(data_obj.s2_to_l8_coeffs_path, coeffs)
 
     else:
-        if data_obj.sentinel2_files:
-            with gw.open(
-                data_obj.sentinel2_files,
-                time_names=data_obj.sentinel2_dates,
-                band_names=[Sentinel2Bands(band).name for band in sentinel2_params.bands if band != Sentinel2Bands.scl.value]
-            ) as data_s2:
-                sentinel2_brdf(
-                    data_s2,
-                    data_obj.sentinel2_df,
-                    params,
-                    data_obj=data_obj
-                )
+        # if data_obj.sentinel2_files:
+        #     with gw.open(
+        #         data_obj.sentinel2_files,
+        #         time_names=data_obj.sentinel2_dates,
+        #         band_names=[Sentinel2Bands(band).name for band in sentinel2_params.bands if band != Sentinel2Bands.scl.value]
+        #     ) as data_s2:
+        #         sentinel2_brdf(
+        #             data_s2,
+        #             data_obj.sentinel2_df,
+        #             params,
+        #             data_obj=data_obj
+        #         )
         if data_obj.landsat_files:
             with gw.open(
                 data_obj.landsat_files,
