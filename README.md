@@ -1,3 +1,21 @@
+# Earth Observation STAC (eostac) processing
+
+## Installation
+
+`eostac` installs a branch of geowombat, so ensure geowombat is not installed
+
+```commandline
+pip uninstall geowombat -y
+```
+
+Install `eostac`
+
+```commandline
+git clone git@github.com:jgrss/eostac.git
+cd eostac/
+pip install .
+```
+
 ## Examples
 
 ### Download a time series of Landsat and Sentinel-2 data
