@@ -251,6 +251,8 @@ def write_stack(
                 )
             )
         except (RasterBlockError, RasterioIOError, RuntimeError) as e:
+            with open(str(out_name) + '_ERROR.txt', mode='w'):
+                pass
             raise DownloadError(e)
 
 
