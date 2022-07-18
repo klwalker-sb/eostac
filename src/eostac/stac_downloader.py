@@ -34,7 +34,7 @@ class DownloadError(Exception):
     def __init__(
         self,
         error,
-        message='The image could not be downloaded. Note that images with block sizes < 16 cannot be tiled.'
+        message='The image could not be downloaded.'
     ):
         self.error = error
         self.message = message
@@ -251,7 +251,7 @@ def write_stack(
                 )
             )
         except (RasterBlockError, RasterioIOError, RuntimeError) as e:
-            with open(str(out_name) + '_ERROR.txt', mode='w'):
+            with open(str(Path(out_name).parent.parent) + '_ERROR.txt', mode='w'):
                 pass
             raise DownloadError(e)
 
@@ -263,10 +263,24 @@ def write_time_stack(
     threads_per_worker: int,
     df: pd.DataFrame,
     tqdm_extra_position: int,
-    desc: str
+    desc: str,
+    chunks: int
 ) -> None:
     """Writes each DataArray time step to file
     """
+    # Check for chunk sizes in intervals of 16
+    if not (data.gw.row_chunks % 16 == 0) or not (data.gw.col_chunks % 16 == 0):
+        if data.gw.nrows > chunks:
+            data = data.chunk(chunks={'band': 1, 'y': chunks, 'x': chunks})
+        else:
+            chunk_size = 16.0
+            while True:
+                if (chunk_size < data.gw.nrows) and (chunk_size < data.gw.ncols):
+                    break
+                chunk_size *= 0.5
+                if chunk_size <= 2:
+                    break
+            data = data.chunk(chunks={'band': 1, 'y': int(chunk_size), 'x': int(chunk_size)})
     if n_workers == 1:
         for row in tqdm(
             df.sort_values('date').itertuples(),
@@ -274,13 +288,11 @@ def write_time_stack(
             desc=desc
         ):
             write_stack(
-                (
-                    row.id,
-                    data,
-                    out_path,
-                    threads_per_worker,
-                    tqdm_extra_position
-                )
+                row.id,
+                data,
+                out_path,
+                threads_per_worker,
+                tqdm_extra_position
             )
 
     else:
@@ -348,7 +360,8 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
             threads_per_worker=params.threads_per_worker,
             df=df_download,
             tqdm_extra_position=params.tqdm_extra_position,
-            desc='Landsat scenes'
+            desc='Landsat scenes',
+            chunks=params.chunksize
         )
 
         return int(data.epsg.values)
@@ -405,7 +418,8 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
             threads_per_worker=params.threads_per_worker,
             df=df_download,
             tqdm_extra_position=params.tqdm_extra_position,
-            desc='Sentinel-2 scenes'
+            desc='Sentinel-2 scenes',
+            chunks=params.chunksize
         )
 
 

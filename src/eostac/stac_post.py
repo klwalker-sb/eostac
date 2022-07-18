@@ -542,8 +542,8 @@ def sentinel2_brdf(
                 num_workers=params.threads_per_worker,
                 resample_res=100.0,
                 chunksize=(
-                    min(data.gw.nrows, data.gw.row_chunks),
-                    min(data.gw.ncols, data.gw.col_chunks)
+                    max(data.gw.row_chunks, 256),
+                    max(data.gw.col_chunks, 256)
                 )
             )
             # Sentinel-2 Landsat-like
