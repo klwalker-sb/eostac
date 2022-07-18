@@ -18,17 +18,31 @@ from geowombat.core.stac import open_stac
 
 import pandas as pd
 import geopandas as gpd
-from rasterio.errors import RasterBlockError
+from rasterio.errors import RasterBlockError, RasterioIOError
 from rasterio.enums import Resampling
-# from dask.distributed import Client, LocalCluster, progress
-import dask
 import xarray as xr
 import pyproj
 from shapely.geometry import CAP_STYLE, JOIN_STYLE
 # from s2cloudless import S2PixelCloudDetector
 import attr
 from tqdm.auto import tqdm
-from tqdm.dask import TqdmCallback
+
+
+class DownloadError(Exception):
+    """Raised when an image can not be downloaded
+    """
+    def __init__(
+        self,
+        error,
+        message='The image could not be downloaded. Note that images with block sizes < 16 cannot be tiled.'
+    ):
+        self.error = error
+        self.message = message
+        super().__init__(self.message)
+
+    def __str__(self):
+        return f"{self.error}: {self.message}"
+
 
 
 @attr.s
@@ -230,11 +244,14 @@ def write_stack(
                     compression='lzw',
                     num_workers=threads_per_worker,
                     log_progress=False,
-                    tqdm_kwargs={'position': tqdm_extra_position+2, 'desc': 'Chunks'}
+                    tqdm_kwargs={
+                        'position': tqdm_extra_position+2,
+                        'desc': 'Chunks'
+                    }
                 )
             )
-        except RasterBlockError:
-            raise RasterBlockError('Images with block sizes < 16 cannot be tiled.')
+        except (RasterBlockError, RasterioIOError, RuntimeError) as e:
+            raise DownloadError(e)
 
 
 def write_time_stack(
@@ -252,7 +269,7 @@ def write_time_stack(
         for row in tqdm(
             df.sort_values('date').itertuples(),
             position=tqdm_extra_position,
-            desc='Scene id'
+            desc=desc
         ):
             write_stack(
                 (
@@ -265,20 +282,22 @@ def write_time_stack(
             )
 
     else:
-        data_gen = ((
-            row.id,
-            data,
-            out_path,
-            threads_per_worker,
-            tqdm_extra_position
-        ) for row in df.sort_values('date').itertuples())
+        data_gen = (
+            (
+                row.id,
+                data,
+                out_path,
+                threads_per_worker,
+                tqdm_extra_position
+            ) for row in df.sort_values('date').itertuples()
+        )
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = [executor.submit(write_stack, *args) for args in data_gen]
             with tqdm(
                 total=len(df.index),
                 position=tqdm_extra_position,
-                desc='Scene id'
+                desc=desc
             ) as pbar:
                 for future in concurrent.futures.as_completed(futures):
                     future.result()
@@ -327,7 +346,7 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
             threads_per_worker=params.threads_per_worker,
             df=df_download,
             tqdm_extra_position=params.tqdm_extra_position,
-            desc='Landsat'
+            desc='Landsat scenes'
         )
 
         return int(data.epsg.values)
@@ -384,7 +403,7 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
             threads_per_worker=params.threads_per_worker,
             df=df_download,
             tqdm_extra_position=params.tqdm_extra_position,
-            desc='Sentinel-2'
+            desc='Sentinel-2 scenes'
         )
 
 
