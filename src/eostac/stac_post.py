@@ -309,8 +309,8 @@ def get_sensor_name(row) -> str:
 
 def get_collection_names(params: Parameters, sensor: str, grid_id: str, row):
     out_scene_path_l3a = params.get_out_file(
-                params.build_scene_id(sensor, grid_id, row.date.strftime('%Y%m%d'), True, True)
-            )
+        params.build_scene_id(sensor, grid_id, row.date.strftime('%Y%m%d'), True, True)
+    )
     out_scene_path_l3b = params.get_out_file(
         params.build_scene_id(sensor, grid_id, row.date.strftime('%Y%m%d'), True, False)
     )
@@ -485,15 +485,11 @@ def landsat_brdf(
                             compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
                             io_tasks = {}
                 else:
-                    io_tasks[tmp_dir] = 1
-                    if params.return_data:
-                        values.append(sr_brdf.data.compute(num_workers=params.n_workers))
+                    io_tasks[tmp_dir] = sr_brdf
 
-            if params.out_path is not None:
-                if io_tasks:
-                    compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
-            else:
-                cleanup_tmp(params, io_tasks)
+            if io_tasks:
+                compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
+            cleanup_tmp(params, io_tasks)
 
     if params.return_data:
         return values
@@ -545,7 +541,10 @@ def sentinel2_brdf(
                 nodata=-32768,
                 num_workers=params.threads_per_worker,
                 resample_res=100.0,
-                chunksize=(data.gw.row_chunks, data.gw.col_chunks)
+                chunksize=(
+                    min(data.gw.nrows, data.gw.row_chunks),
+                    min(data.gw.ncols, data.gw.col_chunks)
+                )
             )
             # Sentinel-2 Landsat-like
             s2_sensor = get_sentinel_sensor(metadata)
@@ -611,15 +610,11 @@ def sentinel2_brdf(
                         compute_dask_brdf(params, io_tasks, 'Sentinel-2 BRDF', position=1)
                         io_tasks = {}
             else:
-                io_tasks[tmp_dir] = 1
-                if params.return_data:
-                    values.append(sr_brdf.data.compute(num_workers=params.n_workers))
+                io_tasks[tmp_dir] = sr_brdf
 
-        if params.out_path is not None:
-            if io_tasks:
-                compute_dask_brdf(params, io_tasks, 'Sentinel-2 BRDF', position=1)
-        else:
-            cleanup_tmp(params, io_tasks)
+        if io_tasks:
+            compute_dask_brdf(params, io_tasks, 'Sentinel-2 BRDF', position=1)
+        cleanup_tmp(params, io_tasks)
 
     if params.return_data:
         return values
