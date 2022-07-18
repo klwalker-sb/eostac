@@ -72,7 +72,7 @@ eostac download \
 eostac adjust \
     --start-date 2013-01-01 \
     --end-date 2013-14-01 \
-    --out-path /coefficients \
+    --out-path /pry_coefficients \
     --geometry /PRY_adm.zip \
     --n-samples 50 \
     --resample 30.0 \
@@ -89,7 +89,7 @@ eostac adjust \
 eostac adjust \
     --start-date 2013-01-01 \
     --end-date 2023-01-01 \
-    --out-path /coefficients \
+    --out-path /pry_coefficients \
     --geometry /PRY_adm.zip \
     --n-samples 50 \
     --threads 8 \
