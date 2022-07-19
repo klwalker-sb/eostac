@@ -6,7 +6,7 @@ import fnmatch
 import numpy as np
 import pandas as pd
 import xarray as xr
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import TheilSenRegressor
 import attr
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -69,6 +69,7 @@ def get_lin_coefficients(
         LandsatBands('swir22').name
     ]
     colors = ['blue', 'green', 'red', 'darkred', 'orange', 'purple']
+    lin_model = TheilSenRegressor(n_jobs=1)
 
     coeffs = {}
     for band_x, band_y, ax, title, color, in zip(X, y, axes, band_names, colors):
@@ -84,7 +85,7 @@ def get_lin_coefficients(
         xsite = xsite[idx] * scale_factor
         ysite = ysite[idx] * scale_factor
 
-        reg = LinearRegression(n_jobs=-1).fit(
+        reg = lin_model.fit(
             xsite[:, None],
             ysite
         )
