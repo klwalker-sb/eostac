@@ -65,6 +65,7 @@ class Parameters(object):
     max_items: T.Union[int, None] = attr.ib(default=100)
     tqdm_item_position: int = attr.ib(default=0)
     tqdm_extra_position: int = attr.ib(default=1)
+    errors_only: bool = attr.ib(default=False)
 
     def __attrs_post_init__(self):
         # Open a file if passed as a path
@@ -226,6 +227,7 @@ def write_stack(
     out_name = out_path / f"{row_id}.tif"
     if not out_name.is_file():
         # Index by scene id because it is always unique
+        error_file = out_path.parent.parent / f'{Path(out_name).parent.parent.name}_{Path(out_name).stem}_ERROR.txt'
         scene_idx = data.id.values.tolist().index(row_id)
         try:
             (
@@ -250,8 +252,10 @@ def write_stack(
                     }
                 )
             )
-        except (RasterBlockError, RasterioIOError, RuntimeError) as e:
-            with open(str(Path(out_name).parent.parent) + '_ERROR.txt', mode='w'):
+            if error_file.is_file():
+                error_file.unlink()
+        except Exception as e:
+            with open(error_file, mode='w'):
                 pass
             raise DownloadError(e)
 
@@ -264,7 +268,8 @@ def write_time_stack(
     df: pd.DataFrame,
     tqdm_extra_position: int,
     desc: str,
-    chunks: int
+    chunks: int,
+    errors_only: bool
 ) -> None:
     """Writes each DataArray time step to file
     """
@@ -281,6 +286,14 @@ def write_time_stack(
                 if chunk_size <= 2:
                     break
             data = data.chunk(chunks={'band': 1, 'y': int(chunk_size), 'x': int(chunk_size)})
+
+    if errors_only:
+        df['error_file'] = out_path.parent / (f'{out_path.parent.name}_' + df.id.map(str) + '_ERROR.txt')
+        df['error_file_exists'] = df.error_file.apply(lambda x: x.is_file())
+        df = df.loc[df.error_file_exists]
+        if df.empty:
+            return
+
     if n_workers == 1:
         for row in tqdm(
             df.sort_values('date').itertuples(),
@@ -361,7 +374,8 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
             df=df_download,
             tqdm_extra_position=params.tqdm_extra_position,
             desc='Landsat scenes',
-            chunks=params.chunksize
+            chunks=params.chunksize,
+            errors_only=params.errors_only
         )
 
         return int(data.epsg.values)
@@ -419,7 +433,8 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
             df=df_download,
             tqdm_extra_position=params.tqdm_extra_position,
             desc='Sentinel-2 scenes',
-            chunks=params.chunksize
+            chunks=params.chunksize,
+            errors_only=params.errors_only
         )
 
 
@@ -440,7 +455,8 @@ def download_data(args):
         view_asset_keys=args.view_asset_keys,
         max_items=None if args.max_items == -1 else args.max_items,
         tqdm_item_position=args.tqdm_item_position,
-        tqdm_extra_position=args.tqdm_extra_position
+        tqdm_extra_position=args.tqdm_extra_position,
+        errors_only=args.errors_only
     )
     # Download Landsat
     landsat_params = LandsatParams(
