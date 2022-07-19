@@ -186,21 +186,24 @@ from eostac.stac_utils import read_df
 import matplotlib.pyplot as plt
 
 
+# Read data from grid 00001
 brdf_path = Path('/brdf/00001')
 df = read_df(brdf_path / 'scene.info')
+# Ensure only existing files are in the DataFrame
 df['file_path'] = brdf_path / df.out_id.map(str)
 df['file_path_exists'] = df.file_path.apply(lambda x: x.is_file())
 df = df.loc[df.file_path_exists]
+# Get the file, time, and band names
 file_list = df.file_path.map(str).values.tolist()
 time_names = df.date.dt.strftime('%Y-%m-%d').values.tolist()
 band_names = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2']
 
-# We use overlap='min' because the nodata values are 32768.
+# Plot a single time slice
 with gw.open(
     file_list,
     time_names=time_names,
     band_names=band_names,
-    overlap='min'
+    overlap='min'   # We use overlap='min' because the nodata values are 32768.
 ) as src:
     # View RGB of first date
     (
@@ -210,6 +213,23 @@ with gw.open(
         .squeeze()
         .transpose('band', 'y', 'x')
         .where(lambda x: x != x.nodatavals[0])
+        .gw.imshow(robust=True)
+    )
+    plt.show()
+
+# Plot the mean over time
+with gw.open(
+    file_list,
+    time_names=time_names,
+    band_names=band_names,
+    overlap='min'   # We use overlap='min' because the nodata values are 32768.
+) as src:
+    (
+        src
+        .sel(band=['red', 'green', 'blue'])
+        .transpose('transpose', 'band', 'y', 'x')
+        .where(lambda x: x != x.nodatavals[0])
+        .mean(dim='time', skipna=True)
         .gw.imshow(robust=True)
     )
     plt.show()
