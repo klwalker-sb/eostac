@@ -342,15 +342,21 @@ def cleanup_tmp(params: Parameters, io_tasks: dict):
         tmp_dir.cleanup()
 
 
-def compute_dask_brdf(params: Parameters, io_tasks: list, desc: str, position: int):
+def compute_dask_brdf(
+    params: Parameters, io_tasks: list, desc: str, position: int, return_data: bool
+):
     # Write the files
     with TqdmCallback(desc=desc, position=position, leave=False):
-        dask.compute(
+        result = dask.compute(
             list(io_tasks.values()),
             num_workers=params.n_workers
         )
 
     cleanup_tmp(params, io_tasks)
+    if return_data:
+        return result[0][0].data.compute(num_workers=params.n_workers)
+    else:
+        return None
 
 
 def landsat_brdf(
@@ -488,7 +494,10 @@ def landsat_brdf(
                     io_tasks[tmp_dir] = sr_brdf
 
             if io_tasks:
-                compute_dask_brdf(params, io_tasks, 'Landsat BRDF', position=3)
+                result = compute_dask_brdf(
+                    params, io_tasks, 'Landsat BRDF', position=3, return_data=params.return_data
+                )
+                values.append(result)
             cleanup_tmp(params, io_tasks)
 
     if params.return_data:
@@ -613,7 +622,10 @@ def sentinel2_brdf(
                 io_tasks[tmp_dir] = sr_brdf
 
         if io_tasks:
-            compute_dask_brdf(params, io_tasks, 'Sentinel-2 BRDF', position=1)
+            result = compute_dask_brdf(
+                params, io_tasks, 'Sentinel-2 BRDF', position=1, return_data=params.return_data
+            )
+            values.append(result)
         cleanup_tmp(params, io_tasks)
 
     if params.return_data:
