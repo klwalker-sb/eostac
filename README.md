@@ -227,7 +227,7 @@ with gw.open(
     (
         src
         .sel(band=['red', 'green', 'blue'])
-        .transpose('transpose', 'band', 'y', 'x')
+        .transpose('time', 'band', 'y', 'x')
         .where(lambda x: x != x.nodatavals[0])
         .mean(dim='time', skipna=True)
         .gw.imshow(robust=True)
