@@ -162,6 +162,11 @@ def main():
                 help='The maximum day difference for Landsat (default: %(default)s)',
                 type=int, default=3
             )
+            subparser.add_argument(
+                '--errors-only', dest='errors_only',
+                help='Whether to only check and download errors (default: %(default)s)',
+                action='store_true'
+            )
 
     args = parser.parse_args()
 

@@ -85,6 +85,9 @@ def adjust_data(args):
                     if args.epsg is not None:
                         com += f" --epsg {args.epsg}"
 
+                    if args.errors_only:
+                        com += ' --errors-only'
+
                     subprocess.call(com, shell=True)
     else:
         for row in tqdm(df.itertuples(), total=len(df.index), position=0, desc='Sample'):
