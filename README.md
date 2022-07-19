@@ -188,7 +188,10 @@ import matplotlib.pyplot as plt
 
 brdf_path = Path('/brdf/00001')
 df = read_df(brdf_path / 'scene.info')
-file_list = (str(brdf_path) + '/' + df.id + '.tif').values.tolist()
+df['file_path'] = brdf_path / df.out_id.map(str)
+df['file_path_exists'] = df.file_path.apply(lambda x: x.is_file())
+df = df.loc[df.file_path_exists]
+file_list = df.file_path.map(str).values.tolist()
 time_names = df.date.dt.strftime('%Y-%m-%d').values.tolist()
 band_names = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2']
 
@@ -205,6 +208,7 @@ with gw.open(
         .isel(time=0)
         .sel(band=['red', 'green', 'blue'])
         .squeeze()
+        .transpose('band', 'y', 'x')
         .where(lambda x: x != x.nodatavals[0])
         .gw.imshow(robust=True)
     )
