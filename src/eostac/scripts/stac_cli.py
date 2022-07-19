@@ -87,6 +87,11 @@ def main():
                 help='The position of the extra progress bar (default: %(default)s)',
                 type=int, default=1
             )
+            subparser.add_argument(
+                '--errors-only', dest='errors_only',
+                help='Whether to only check and download errors (default: %(default)s)',
+                action='store_true'
+            )
         elif process == Processes.brdf:
             subparser.add_argument(
                 '-p', '--project-path', dest='project_path', help='The input project path (default: %(default)s)'
