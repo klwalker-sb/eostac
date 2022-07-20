@@ -255,6 +255,8 @@ def write_stack(
             if error_file.is_file():
                 error_file.unlink()
         except Exception as e:
+            if out_name.is_file():
+                out_name.unlink()
             with open(error_file, mode='w') as f:
                 f.write(e)
             raise DownloadError(e)
