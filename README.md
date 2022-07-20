@@ -217,7 +217,7 @@ with gw.open(
     )
     plt.show()
 
-# Plot the mean over time
+# Plot the median over time
 with gw.open(
     file_list,
     time_names=time_names,
@@ -229,7 +229,7 @@ with gw.open(
         .sel(band=['red', 'green', 'blue'])
         .transpose('time', 'band', 'y', 'x')
         .where(lambda x: x != x.nodatavals[0])
-        .mean(dim='time', skipna=True)
+        .median(dim='time', skipna=True)
         .gw.imshow(robust=True)
     )
     plt.show()
