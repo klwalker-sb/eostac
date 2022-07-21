@@ -1,4 +1,5 @@
 import chunk
+from fileinput import filename
 from pathlib import Path
 import tempfile
 from collections import namedtuple
@@ -28,7 +29,8 @@ from .stac_utils import (
     read_df,
     pickle_scene_info,
     assign_crs,
-    rechunk
+    rechunk,
+    save_netcdf
 )
 
 import geowombat as gw
@@ -47,6 +49,7 @@ import numpy as np
 import pandas as pd
 import dask
 from dask.delayed import Delayed
+from dask.diagnostics import Profiler, ResourceProfiler, CacheProfiler, visualize
 import dask.array as da
 import xarray as xr
 import rasterio as rio
@@ -115,7 +118,7 @@ IO_PARAMETERS = {
             'log_progress': False,
             'compute': False,
             'tags': {
-                'gain': 1e-4,
+                'gain': UP_SCALE,
                 'offset': 0.0,
                 'data_range': '[0,10_000]',
                 'processing_level': 'SR,BRDF',
@@ -288,6 +291,13 @@ def finalize_brdf(
 ) -> xr.DataArray:
     """Data should be in [0,1] range
     """
+    attrs['nodatavals'] = (NODATA,) * sr_brdf.gw.nbands
+    attrs['crs'] = sr_brdf.gw.crs_to_pyproj.to_proj4()
+    attrs['gain'] = UP_SCALE
+    attrs['offset'] = 0.0
+    attrs['data_range'] = '[0,10_000]'
+    attrs['processing_level'] = 'SR,BRDF'
+    attrs['data_type'] = 'uint16'
     data = (
         xr.where(
             data_mask == 1,
@@ -296,8 +306,6 @@ def finalize_brdf(
         )
         .transpose('band', 'y', 'x')
         .assign_attrs(**attrs)
-        .assign_attrs(nodatavals=(NODATA,)*sr_brdf.gw.nbands)
-        .assign_attrs(crs=sr_brdf.gw.crs_to_pyproj.to_proj4())
     )
 
     # Check for chunk sizes in intervals of 16
@@ -360,11 +368,24 @@ def compute_dask_brdf(
     params: Parameters, io_tasks: list, desc: str, position: int, return_data: bool
 ):
     # Write the files
+    # with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof, CacheProfiler() as cprof:
     with TqdmCallback(desc=desc, position=position, leave=False):
-        results = dask.compute(
-            [task for task in io_tasks.values()],
-            num_workers=params.n_workers
-        )
+        if return_data:
+            results = dask.compute(
+                list(io_tasks.values()),
+                num_workers=params.n_workers
+            )
+        else:
+            tasks, filenames = map(list, zip(*io_tasks.values()))
+            results = dask.compute(
+                save_netcdf(
+                    tasks,
+                    filenames
+                ),
+                num_workers=params.n_workers
+            )
+
+        # visualize([prof, rprof, cprof], filename='/mnt/c/Users/jbgra/Documents/data/stac/profile.html')
 
     cleanup_tmp(params, io_tasks)
     if return_data:
@@ -404,10 +425,11 @@ def landsat_brdf(
     """Calculates BRDF for Landsat
     """
     data = data.transpose('time', 'band', 'y', 'x')
+    attrs = data.attrs.copy()
+    attrs['crs'] = f"epsg:{data.gw.crs_to_pyproj.to_epsg()}"
     open_kwargs, values, attrs, grid_id, io_tasks = brdf_pre_iter(data, params)
     with threadpool_limits(limits=1, user_api='blas'):
         with tempfile.TemporaryDirectory() as gz_tmp:
-            # try:
             # Extra the USGS ESPA angle tools to the temporary directory
             angle_paths = extract_espa_tools(gz_tmp)
             for row_idx, row in enumerate(
@@ -504,12 +526,19 @@ def landsat_brdf(
                         )
                     )
                     # Get a dask.delayed object to the task graph
-                    rio_store = getattr(gw, params.io['method'])(
-                        brdf_delayed_to_da(sr_brdf, data),
-                        out_scene_path,
-                        **params.io['kwargs']
+                    ds = (
+                        brdf_delayed_to_da(sr_brdf, data)
+                        .to_dataset(dim='band')
+                        .assign_attrs(**attrs)
                     )
-                    io_tasks[tmp_dir] = rio_store
+                    # Get a dask.delayed object to the task graph
+                    # rio_store = getattr(gw, params.io['method'])(
+                    #     brdf_delayed_to_da(sr_brdf, data),
+                    #     out_scene_path,
+                    #     **params.io['kwargs']
+                    # )
+                    # io_tasks[tmp_dir] = rio_store
+                    io_tasks[tmp_dir] = (ds, out_scene_path)
 
                     # Save the scene info
                     scene_info = params.out_path / 'scene.info'
@@ -533,7 +562,7 @@ def landsat_brdf(
                             )
                             io_tasks = {}
                 else:
-                    io_tasks[tmp_dir] = sr_brdf
+                    io_tasks[tmp_dir] = brdf_delayed_to_da(sr_brdf, data)
 
             if io_tasks:
                 result = compute_dask_brdf(
@@ -541,8 +570,6 @@ def landsat_brdf(
                 )
                 values.append(result)
             cleanup_tmp(params, io_tasks)
-            # except Exception:
-            #     cleanup_tmp(params, io_tasks)
 
     if params.return_data:
         return values
@@ -557,9 +584,10 @@ def sentinel2_brdf(
     """Calculates BRDF for Sentinel-2
     """
     data = data.transpose('time', 'band', 'y', 'x')
+    attrs = data.attrs.copy()
+    attrs['crs'] = f"epsg:{data.gw.crs_to_pyproj.to_epsg()}"
     open_kwargs, values, attrs, grid_id, io_tasks = brdf_pre_iter(data, params)
     with threadpool_limits(limits=1, user_api='blas'):
-        # try:
         for row_idx, row in enumerate(
             tqdm(
                 scene_info.itertuples(),
@@ -646,13 +674,19 @@ def sentinel2_brdf(
                         bandpass_applied
                     )
                 )
-                # Get a dask.delayed object to the task graph
-                rio_store = getattr(gw, params.io['method'])(
-                    brdf_delayed_to_da(sr_brdf, data),
-                    out_scene_path,
-                    **params.io['kwargs']
+                ds = (
+                    brdf_delayed_to_da(sr_brdf, data)
+                    .to_dataset(dim='band')
+                    .assign_attrs(**attrs)
                 )
-                io_tasks[tmp_dir] = rio_store
+                # Get a dask.delayed object to the task graph
+                # rio_store = getattr(gw, params.io['method'])(
+                #     brdf_delayed_to_da(sr_brdf, data),
+                #     out_scene_path,
+                #     **params.io['kwargs']
+                # )
+                # io_tasks[tmp_dir] = rio_store
+                io_tasks[tmp_dir] = (ds, out_scene_path)
 
                 # Save the scene info
                 scene_info = params.out_path / 'scene.info'
@@ -676,7 +710,7 @@ def sentinel2_brdf(
                         )
                         io_tasks = {}
             else:
-                io_tasks[tmp_dir] = sr_brdf
+                io_tasks[tmp_dir] = brdf_delayed_to_da(sr_brdf, data)
 
         if io_tasks:
             result = compute_dask_brdf(
