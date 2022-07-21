@@ -2,6 +2,7 @@ import enum
 from pathlib import Path
 import typing as T
 import fnmatch
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -11,6 +12,7 @@ import attr
 import matplotlib.pyplot as plt
 import seaborn as sns
 import json
+from affine import Affine
 
 
 NODATA = 32768
@@ -312,28 +314,46 @@ def rechunk(data: xr.DataArray, chunks: int):
     return data
 
 
+def _scale(data: xr.DataArray) -> xr.DataArray:
+    return data * UP_SCALE
+
+
 def expand_time(dataset):
     """`open_mfdataset` preprocess function
     """
-    # Convert the Dataset into a DataArray,
-    # rename the band coordinate,
-    # select the required VI bands,
-    # assign y/x coordinates from a reference,
-    # add the time coordiante, and
-    # get the sub-array slice
+    attrs = dataset.attrs.copy()
+    attrs['transform'] = Affine(*attrs['transform'])
+    # Get the date
+    file_date = datetime.strptime(Path(dataset.encoding['source']).stem.split('_')[3], '%Y%m%d')
     darray = (
         dataset
         .to_array()
         .rename({'variable': 'band'})
         .sel(band=LANDSAT_LIKE_BAND_NAMES)
-        .assign_coords(y=dataset.y, x=dataset.x)
-        .expand_dims(dim='time')
+        .assign_coords(time=file_date, y=dataset.y, x=dataset.x)
+        .expand_dims('time')
+        .transpose('time', 'band', 'y', 'x')
+        .where(lambda x: x != x.nodatavals[0])
     )
 
-    return darray
+    return darray.map_blocks(_scale, template=darray).assign_attrs(**attrs)
 
 
-def open_netcdf(file_list: T.Sequence[T.Union[str, Path]], chunks: int = 512) -> xr.DataArray:
+def save_netcdf(datasets: T.Sequence[xr.Dataset], filenames: T.Sequence[T.Union[str, Path]]):
+    return xr.save_mfdataset(
+        datasets,
+        filenames,
+        mode='w',
+        format='NETCDF4',
+        engine='h5netcdf',
+        compute=False
+    )
+
+
+def open_netcdf(
+    file_list: T.Sequence[T.Union[str, Path]],
+    chunks: int = 512
+) -> xr.DataArray:
     return xr.open_mfdataset(
         file_list,
         concat_dim='time',
