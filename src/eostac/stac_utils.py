@@ -30,6 +30,16 @@ class LandsatBands(enum.Enum):
     qa = 'qa_pixel'
 
 
+LANDSAT_LIKE_BAND_NAMES = [
+    LandsatBands('blue').name,
+    LandsatBands('green').name,
+    LandsatBands('red').name,
+    LandsatBands('nir08').name,
+    LandsatBands('swir16').name,
+    LandsatBands('swir22').name
+]
+
+
 class Sentinel2Bands(enum.Enum):
     coastal = 'B01'
     blue = 'B02'
@@ -60,19 +70,11 @@ def get_lin_coefficients(
     axes = axes.flatten()
     sns.despine(fig=fig)
 
-    band_names = [
-        LandsatBands('blue').name,
-        LandsatBands('green').name,
-        LandsatBands('red').name,
-        LandsatBands('nir08').name,
-        LandsatBands('swir16').name,
-        LandsatBands('swir22').name
-    ]
     colors = ['blue', 'green', 'red', 'darkred', 'orange', 'purple']
     lin_model = TheilSenRegressor(n_jobs=1)
 
     coeffs = {}
-    for band_x, band_y, ax, title, color, in zip(X, y, axes, band_names, colors):
+    for band_x, band_y, ax, title, color, in zip(X, y, axes, LANDSAT_LIKE_BAND_NAMES, colors):
         xsite = band_x.flatten().astype('float32')
         ysite = band_y.flatten().astype('float32')
         idx = np.where(
@@ -274,6 +276,11 @@ def pickle_scene_info(
     df_download = df.copy()
     if scene_info.is_file():
         df_info = pd.read_pickle(scene_info)
+        # Set the index as unique ids
+        df = df.set_index('id', drop=False)
+        df.index.rename(None, inplace=True)
+        df_info = df_info.set_index('id', drop=False)
+        df_info.index.rename(None, inplace=True)
         if (len(df_info.index) == 1) or (len(df_info.index.difference(df.index)) > 0):
             df = pd.concat((df_info, df), axis=0).reset_index(drop=True)
         df = df.drop_duplicates(subset=['id', 'date'])
@@ -284,3 +291,55 @@ def pickle_scene_info(
 
 def assign_crs(data: xr.DataArray) -> xr.DataArray:
     return data.assign_attrs(crs=data.gw.crs_to_pyproj.to_proj4())
+
+
+def rechunk(data: xr.DataArray, chunks: int):
+    """Re-chunks a ``DataArray`` if the chunk sizes are not in intervals of 16
+    """
+    if not (data.gw.row_chunks % 16 == 0) or not (data.gw.col_chunks % 16 == 0):
+        if data.gw.nrows >= chunks:
+            data = data.chunk(chunks={'band': 1, 'y': chunks, 'x': chunks})
+        else:
+            chunk_size = 16.0
+            while True:
+                if (chunk_size < data.gw.nrows) and (chunk_size < data.gw.ncols):
+                    break
+                chunk_size *= 0.5
+                if chunk_size <= 2:
+                    break
+            data = data.chunk(chunks={'band': 1, 'y': int(chunk_size), 'x': int(chunk_size)})
+
+    return data
+
+
+def expand_time(dataset):
+    """`open_mfdataset` preprocess function
+    """
+    # Convert the Dataset into a DataArray,
+    # rename the band coordinate,
+    # select the required VI bands,
+    # assign y/x coordinates from a reference,
+    # add the time coordiante, and
+    # get the sub-array slice
+    darray = (
+        dataset
+        .to_array()
+        .rename({'variable': 'band'})
+        .sel(band=LANDSAT_LIKE_BAND_NAMES)
+        .assign_coords(y=dataset.y, x=dataset.x)
+        .expand_dims(dim='time')
+    )
+
+    return darray
+
+
+def open_netcdf(file_list: T.Sequence[T.Union[str, Path]], chunks: int = 512) -> xr.DataArray:
+    return xr.open_mfdataset(
+        file_list,
+        concat_dim='time',
+        chunks={'y': chunks, 'x': chunks},
+        combine='nested',
+        engine='h5netcdf',
+        preprocess=expand_time,
+        parallel=True
+    )
