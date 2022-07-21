@@ -9,6 +9,7 @@ from .stac_utils import (
     Sentinel2Bands,
     SensorPaths,
     pickle_scene_info,
+    rechunk,
     NODATA,
     NODOWNLOAD
 )
@@ -276,19 +277,8 @@ def write_time_stack(
     """Writes each DataArray time step to file
     """
     # Check for chunk sizes in intervals of 16
-    if not (data.gw.row_chunks % 16 == 0) or not (data.gw.col_chunks % 16 == 0):
-        if data.gw.nrows > chunks:
-            data = data.chunk(chunks={'band': 1, 'y': chunks, 'x': chunks})
-        else:
-            chunk_size = 16.0
-            while True:
-                if (chunk_size < data.gw.nrows) and (chunk_size < data.gw.ncols):
-                    break
-                chunk_size *= 0.5
-                if chunk_size <= 2:
-                    break
-            data = data.chunk(chunks={'band': 1, 'y': int(chunk_size), 'x': int(chunk_size)})
-
+    data = rechunk(data, chunks)
+    
     if errors_only:
         df['error_file'] = out_path.parent / (f'{out_path.parent.name}_' + df.id.map(str) + '_ERROR.txt')
         df['error_file_exists'] = df.error_file.apply(lambda x: x.is_file())
