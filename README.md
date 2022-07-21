@@ -108,15 +108,16 @@ eostac brdf \
     --out-path /brdf/000001 \
     --coeffs-path /eostac/files/coefficients/ \
     --coeffs-prefix pry_ \
-    --file-format geotiff \
+    --file-format netcdf \
     --apply-bandpass \
-    --workers 8
+    --workers 8 \
+    --pool-size 10
 ```
 
 > Output BRDF names
 
 ```text
-L<processing level>_<sensor>_<image acquisition date>_<file creation date>_C<collection><extension>
+L<processing level>_<sensor>_<grid id>_<image acquisition date>_<file creation date>_C<collection><extension>
 ```
 
 where,
@@ -133,6 +134,12 @@ where,
   * LE07
   * LC08
   * LC09
+* grid id
+  * project grid id + 
+  * Landsat
+    * path/row
+  * Sentinel
+    * MGRS grid
 * image acquisition date
   * YYYYMMDD
 * file creation date
@@ -143,10 +150,13 @@ where,
   * .tif
   * .nc
 
-Example:
+Examples:
 
 ```text
-L3B_S2A_20210104_20220711_C01.tif
+L3A_LC08_003908225077_20201219_20220721_C01.nc
+L3B_LE07_003908225077_20201227_20220721_C01.nc
+L3B_S2A_00390821JWM_20210113_20220721_C01.nc
+L3B_S2B_00390821JWM_20210118_20220721_C01.nc
 ```
 
 ### View scene file information
