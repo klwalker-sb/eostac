@@ -127,7 +127,7 @@ def main():
             subparser.add_argument(
                 '--pool-size', dest='pool_size',
                 help='The processing pool size (default: %(default)s)',
-                type=int, default=5
+                type=int, default=10
             )
         elif process == Processes.adjust:
             subparser.add_argument(
