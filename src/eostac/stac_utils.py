@@ -323,6 +323,7 @@ def expand_time(dataset):
     """
     attrs = dataset.attrs.copy()
     attrs['transform'] = Affine(*attrs['transform'])
+    attrs['res'] = tuple(attrs['res'])
     # Get the date
     file_date = datetime.strptime(Path(dataset.encoding['source']).stem.split('_')[3], '%Y%m%d')
     darray = (
@@ -354,12 +355,27 @@ def open_netcdf(
     file_list: T.Sequence[T.Union[str, Path]],
     chunks: int = 512
 ) -> xr.DataArray:
-    return xr.open_mfdataset(
+    darray = xr.open_mfdataset(
         file_list,
         concat_dim='time',
-        chunks={'y': chunks, 'x': chunks},
+        chunks={
+            'time': len(file_list),
+            'band': len(LANDSAT_LIKE_BAND_NAMES),
+            'y': chunks,
+            'x': chunks
+        },
         combine='nested',
         engine='h5netcdf',
         preprocess=expand_time,
         parallel=True
+    )
+    attrs = darray.attrs.copy()
+
+    # Group dates
+    return (
+        darray
+        .groupby('time')
+        .mean(skipna=True)
+        .chunk({'time': -1, 'band': -1})
+        .assign_attrs(**attrs)
     )
