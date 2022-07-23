@@ -377,6 +377,8 @@ def compute_dask_brdf(
             )
         else:
             tasks, filenames = map(list, zip(*io_tasks.values()))
+            if pd.Series(filenames).duplicated().any():
+                import ipdb;ipdb.set_trace()
             results = dask.compute(
                 save_netcdf(
                     tasks,
@@ -519,7 +521,7 @@ def landsat_brdf(
                     out_scene_path = params.get_out_file(
                         params.build_scene_id(
                             sensor,
-                            grid_id + row.id.split('_')[2],
+                            grid_id + row.id.split('_')[2] + ''.join(row.id.split('_')[-2:]),
                             row.date.strftime('%Y%m%d'),
                             True,
                             bandpass_applied
@@ -541,7 +543,7 @@ def landsat_brdf(
                     io_tasks[tmp_dir] = (ds, out_scene_path)
 
                     # Save the scene info
-                    scene_info = params.out_path / 'scene.info'
+                    scene_info_path = params.out_path / 'scene.info'
                     df = pd.DataFrame(
                         data=[[
                             row.id,
@@ -553,7 +555,7 @@ def landsat_brdf(
                         ]],
                         columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
                     )
-                    df = pickle_scene_info(df, date_pos=3, scene_info=scene_info)[0]
+                    df = pickle_scene_info(df, date_pos=3, scene_info=scene_info_path)[0]
 
                     if (row_idx > 0) and (row_idx % params.pool_size == 0):
                         if io_tasks:
@@ -668,7 +670,7 @@ def sentinel2_brdf(
                 out_scene_path = params.get_out_file(
                     params.build_scene_id(
                         sensor,
-                        grid_id + row.id.split('_')[1],
+                        grid_id + row.id.split('_')[1] + ''.join(row.id.split('_')[-2:]),
                         row.date.strftime('%Y%m%d'),
                         True,
                         bandpass_applied
@@ -689,7 +691,7 @@ def sentinel2_brdf(
                 io_tasks[tmp_dir] = (ds, out_scene_path)
 
                 # Save the scene info
-                scene_info = params.out_path / 'scene.info'
+                scene_info_path = params.out_path / 'scene.info'
                 df = pd.DataFrame(
                     data=[[
                         row.id,
@@ -701,7 +703,7 @@ def sentinel2_brdf(
                     ]],
                     columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
                 )
-                df = pickle_scene_info(df, date_pos=2, scene_info=scene_info)[0]
+                df = pickle_scene_info(df, date_pos=2, scene_info=scene_info_path)[0]
 
                 if (row_idx > 0) and (row_idx % params.pool_size == 0):
                     if io_tasks:
