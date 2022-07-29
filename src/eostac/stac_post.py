@@ -30,6 +30,7 @@ from .stac_utils import (
     pickle_scene_info,
     assign_crs,
     rechunk,
+    get_netcdf_encoding,
     save_netcdf
 )
 
@@ -127,32 +128,18 @@ IO_PARAMETERS = {
             }
         }
     },
-    # FileFormat.geotiff: {
-    #     'method': 'to_raster',
-    #     'extension': '.tif',
-    #     'kwargs': {
-    #         'compress': 'lzw',
-    #         'overwrite': True,
-    #         'nodata': NODATA,
-    #         'tqdm_kwargs': {},
-    #         'tags': {
-    #             'gain': 1e-4,
-    #             'offset': 0.0,
-    #             'data_range': '[0,10_000]',
-    #             'processing_level': 'SR,BRDF',
-    #             'nodata': NODATA,
-    #             'dtype': 'uint16'
-    #         }
-    #     }
-    # },
     FileFormat.netcdf: {
         'method': 'to_netcdf',
         'extension': '.nc',
-        'kwargs': {
-            'overwrite': True,
-            'compute': False,
+        'encoding': {
             'zlib': True,
-            'complevel': 5
+            'complevel': 5,
+            '_FillValue': NODATA
+        },
+        'kwargs': {
+            'compute': False,
+            'format': 'NETCDF4',
+            'engine': 'h5netcdf'
         }
     }
 }
@@ -365,7 +352,12 @@ def cleanup_tmp(params: Parameters, io_tasks: dict):
 
 
 def compute_dask_brdf(
-    params: Parameters, io_tasks: list, desc: str, position: int, return_data: bool
+    params: Parameters,
+    io_tasks: list,
+    desc: str,
+    position: int,
+    return_data: bool,
+    encoding: T.Optional[dict] = None
 ):
     # Write the files
     # with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof, CacheProfiler() as cprof:
@@ -377,12 +369,12 @@ def compute_dask_brdf(
             )
         else:
             tasks, filenames = map(list, zip(*io_tasks.values()))
-            if pd.Series(filenames).duplicated().any():
-                import ipdb;ipdb.set_trace()
             results = dask.compute(
                 save_netcdf(
                     tasks,
-                    filenames
+                    filenames,
+                    encoding=encoding,
+                    **params.io['kwargs']
                 ),
                 num_workers=params.n_workers
             )
@@ -429,6 +421,12 @@ def landsat_brdf(
     data = data.transpose('time', 'band', 'y', 'x')
     attrs = data.attrs.copy()
     attrs['crs'] = f"epsg:{data.gw.crs_to_pyproj.to_epsg()}"
+    encoding = get_netcdf_encoding(
+        (data.gw.row_chunks, data.gw.col_chunks),
+        bands=data.band.values.tolist(),
+        dtype='uint16',
+        encoding=params.io['encoding']
+    )
     open_kwargs, values, attrs, grid_id, io_tasks = brdf_pre_iter(data, params)
     with threadpool_limits(limits=1, user_api='blas'):
         with tempfile.TemporaryDirectory() as gz_tmp:
@@ -560,7 +558,12 @@ def landsat_brdf(
                     if (row_idx > 0) and (row_idx % params.pool_size == 0):
                         if io_tasks:
                             compute_dask_brdf(
-                                params, io_tasks, 'Landsat BRDF', position=3, return_data=params.return_data
+                                params,
+                                io_tasks,
+                                'Landsat BRDF',
+                                position=3,
+                                return_data=params.return_data,
+                                encoding=encoding
                             )
                             io_tasks = {}
                 else:
@@ -568,7 +571,12 @@ def landsat_brdf(
 
             if io_tasks:
                 result = compute_dask_brdf(
-                    params, io_tasks, 'Landsat BRDF', position=3, return_data=params.return_data
+                    params,
+                    io_tasks,
+                    'Landsat BRDF',
+                    position=3,
+                    return_data=params.return_data,
+                    encoding=encoding
                 )
                 values.append(result)
             cleanup_tmp(params, io_tasks)
@@ -588,6 +596,12 @@ def sentinel2_brdf(
     data = data.transpose('time', 'band', 'y', 'x')
     attrs = data.attrs.copy()
     attrs['crs'] = f"epsg:{data.gw.crs_to_pyproj.to_epsg()}"
+    encoding = get_netcdf_encoding(
+        (data.gw.row_chunks, data.gw.col_chunks),
+        bands=data.band.values.tolist(),
+        dtype='uint16',
+        encoding=params.io['encoding']
+    )
     open_kwargs, values, attrs, grid_id, io_tasks = brdf_pre_iter(data, params)
     with threadpool_limits(limits=1, user_api='blas'):
         for row_idx, row in enumerate(
@@ -708,7 +722,12 @@ def sentinel2_brdf(
                 if (row_idx > 0) and (row_idx % params.pool_size == 0):
                     if io_tasks:
                         compute_dask_brdf(
-                            params, io_tasks, 'Sentinel-2 BRDF', position=1, return_data=params.return_data
+                            params,
+                            io_tasks,
+                            'Sentinel-2 BRDF',
+                            position=1,
+                            return_data=params.return_data,
+                            encoding=encoding
                         )
                         io_tasks = {}
             else:
@@ -716,7 +735,12 @@ def sentinel2_brdf(
 
         if io_tasks:
             result = compute_dask_brdf(
-                params, io_tasks, 'Sentinel-2 BRDF', position=1, return_data=params.return_data
+                params,
+                io_tasks,
+                'Sentinel-2 BRDF',
+                position=1,
+                return_data=params.return_data,
+                encoding=encoding
             )
             values.append(result)
         cleanup_tmp(params, io_tasks)

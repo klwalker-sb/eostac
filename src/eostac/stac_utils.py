@@ -340,14 +340,38 @@ def expand_time(dataset):
     return darray.map_blocks(_scale, template=darray).assign_attrs(**attrs)
 
 
-def save_netcdf(datasets: T.Sequence[xr.Dataset], filenames: T.Sequence[T.Union[str, Path]]):
+def get_netcdf_encoding(
+    chunksize: tuple,
+    bands: T.Sequence[int],
+    dtype: str,
+    encoding: dict
+) -> dict:
+    """Gets encodings for NetCDF files
+    """
+    all_encodings = {}
+    for band_name in bands:
+        encode_dict = {
+            'chunksizes': chunksize,
+            'dtype': dtype
+        }
+        encode_dict.update(encoding)
+        all_encodings[band_name] = encode_dict
+
+    return all_encodings
+
+
+def save_netcdf(
+    datasets: T.Sequence[xr.Dataset],
+    filenames: T.Sequence[T.Union[str, Path]],
+    **kwargs
+):
+    """Saves a collection of xarray Datasets as NetCDF files
+    """
     return xr.save_mfdataset(
         datasets,
         filenames,
         mode='w',
-        format='NETCDF4',
-        engine='h5netcdf',
-        compute=False
+        **kwargs
     )
 
 
@@ -355,6 +379,8 @@ def open_netcdf(
     file_list: T.Sequence[T.Union[str, Path]],
     chunks: int = 512
 ) -> xr.DataArray:
+    """Opens a collection of files as a xarray DataArray
+    """
     darray = xr.open_mfdataset(
         file_list,
         concat_dim='time',
