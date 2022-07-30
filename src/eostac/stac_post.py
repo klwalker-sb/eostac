@@ -35,6 +35,7 @@ from .stac_utils import (
 )
 
 import geowombat as gw
+from geowombat.backends.xarray_ import delayed_to_xarray
 from geowombat.bin import extract_espa_tools
 from geowombat.radiometry import (
     landsat_pixel_angles,
@@ -430,13 +431,11 @@ def compute_dask_brdf(
 
 
 def brdf_delayed_to_da(sr_brdf: Delayed, data: xr.DataArray) -> xr.DataArray:
-    return xr.DataArray(
-        da.from_delayed(
-            sr_brdf,
-            shape=(data.gw.nbands, data.gw.nrows, data.gw.ncols),
-            dtype='uint16'
-        ).rechunk((1, data.gw.row_chunks, data.gw.col_chunks)),
-        dims=('band', 'y', 'x'),
+    return delayed_to_xarray(
+        delayed_data=sr_brdf,
+        shape=(data.gw.nbands, data.gw.nrows, data.gw.ncols),
+        dtype='uint16',
+        chunks=(-1, data.gw.row_chunks, data.gw.col_chunks),
         coords={
             'band': data.band.values,
             'y': data.y.values,
