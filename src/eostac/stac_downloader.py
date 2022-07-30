@@ -262,12 +262,12 @@ def write_stack(
                         pass
                 except Exception as e:
                     out_name.unlink()
-                    raise IOError(e)
+                    raise DownloadError(e)
                 # If there was previously an error file, remove it with a successful download
                 if error_file.is_file():
                     error_file.unlink()
             else:
-                raise IOError('No file was created')
+                raise DownloadError('No file was created')
         except Exception as e:
             if out_name.is_file():
                 out_name.unlink()
