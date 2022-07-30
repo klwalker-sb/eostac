@@ -19,7 +19,7 @@ from geowombat.core.stac import open_stac
 
 import pandas as pd
 import geopandas as gpd
-from rasterio.errors import RasterBlockError, RasterioIOError
+import rasterio as rio
 from rasterio.enums import Resampling
 import xarray as xr
 import pyproj
@@ -225,6 +225,8 @@ def write_stack(
     threads_per_worker: int,
     tqdm_extra_position: int
 ):
+    """Writes a single time band stack to file
+    """
     out_name = out_path / f"{row_id}.tif"
     if not out_name.is_file():
         # Index by scene id because it is always unique
@@ -253,8 +255,19 @@ def write_stack(
                     }
                 )
             )
-            if error_file.is_file():
-                error_file.unlink()
+            # Ensure the file is not corrupted
+            if out_name.is_file():
+                try:
+                    with rio.open(out_name):
+                        pass
+                except Exception as e:
+                    out_name.unlink()
+                    raise IOError(e)
+                # If there was previously an error file, remove it with a successful download
+                if error_file.is_file():
+                    error_file.unlink()
+            else:
+                raise IOError('No file was created')
         except Exception as e:
             if out_name.is_file():
                 out_name.unlink()
@@ -278,7 +291,7 @@ def write_time_stack(
     """
     # Check for chunk sizes in intervals of 16
     data = rechunk(data, chunks)
-    
+
     if errors_only:
         df['error_file'] = out_path.parent / (f'{out_path.parent.name}_' + df.id.map(str) + '_ERROR.txt')
         df['error_file_exists'] = df.error_file.apply(lambda x: x.is_file())
