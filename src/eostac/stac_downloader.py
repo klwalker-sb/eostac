@@ -273,7 +273,6 @@ def write_stack(
                 out_name.unlink()
             with open(error_file, mode='w') as f:
                 f.write(e)
-            raise DownloadError(e)
 
 
 def write_time_stack(
