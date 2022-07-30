@@ -316,15 +316,56 @@ def get_sensor_name(row) -> str:
     return row.id.split('_')[0]
 
 
-def get_collection_names(params: Parameters, sensor: str, grid_id: str, path_id: str, row):
-    out_scene_path_l3a = params.get_out_file(
-        params.build_scene_id(sensor, grid_id + path_id, row.date.strftime('%Y%m%d'), True, True)
+def get_collection_name(
+    params: Parameters,
+    sensor: str,
+    row: namedtuple,
+    brdf_applied: bool,
+    bandpass_applied: bool
+):
+    row_id_parts = row.id.split('_')
+    path_id = params.out_path.name
+    if row.id.lower().startswith('l'):
+        # Landsat
+        grid_id = row_id_parts[2]
+        scene_date = row_id_parts[3]
+    else:
+        # Sentinel
+        grid_id = row_id_parts[1]
+        scene_date = row_id_parts[2]
+    level_id = ''.join(row.id.split('_')[-2:])
+    uid = path_id + grid_id + level_id
+
+    return params.get_out_file(
+        params.build_scene_id(
+            sensor,
+            uid,
+            scene_date,
+            brdf_applied,
+            bandpass_applied
+        )
     )
-    out_scene_path_l3b = params.get_out_file(
-        params.build_scene_id(sensor, grid_id + path_id, row.date.strftime('%Y%m%d'), True, False)
+
+
+def get_collection_names(
+    params: Parameters, sensor: str, row: namedtuple
+):
+    out_scene_path_l3a = get_collection_name(
+        params, sensor, row, True, True
+    )
+    out_scene_path_l3b = get_collection_name(
+        params, sensor, row, True, False
     )
 
     return out_scene_path_l3a, out_scene_path_l3b
+
+
+def get_existing_filenames(filepath: Path) -> list:
+    return list(
+        filepath.parent.glob(
+            f"{'_'.join(filepath.stem.split('_')[:4])}*{filepath.name.split('_')[-1]}"
+        )
+    )
 
 
 def slice_and_mask(data: xr.DataArray, row) -> T.Tuple[xr.DataArray, xr.DataArray]:
@@ -430,7 +471,7 @@ def landsat_brdf(
     open_kwargs, values, attrs, grid_id, io_tasks = brdf_pre_iter(data, params)
     with threadpool_limits(limits=1, user_api='blas'):
         with tempfile.TemporaryDirectory() as gz_tmp:
-            # Extra the USGS ESPA angle tools to the temporary directory
+            # Extract the USGS ESPA angle tools to the temporary directory
             angle_paths = extract_espa_tools(gz_tmp)
             for row_idx, row in enumerate(
                 tqdm(
@@ -443,9 +484,11 @@ def landsat_brdf(
                 sensor = get_sensor_name(row)
                 if params.out_path is not None:
                     out_scene_path_l3a, out_scene_path_l3b = get_collection_names(
-                        params, sensor, grid_id, row.id.split('_')[2], row
+                        params, sensor, row
                     )
-                    if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
+                    scene_3a = get_existing_filenames(out_scene_path_l3a)
+                    scene_3b = get_existing_filenames(out_scene_path_l3b)
+                    if scene_3a or scene_3b:
                         continue
                 # Scale the data to [0,1] and get the mask
                 data_slice, data_mask = slice_and_mask(data, row)
@@ -516,14 +559,12 @@ def landsat_brdf(
                 # Finalize the attributes
                 sr_brdf = dask.delayed(finalize_brdf)(sr_brdf, data_mask, attrs, data.gw.row_chunks)
                 if params.out_path is not None:
-                    out_scene_path = params.get_out_file(
-                        params.build_scene_id(
-                            sensor,
-                            grid_id + row.id.split('_')[2] + ''.join(row.id.split('_')[-2:]),
-                            row.date.strftime('%Y%m%d'),
-                            True,
-                            bandpass_applied
-                        )
+                    out_scene_path = get_collection_name(
+                        params,
+                        sensor,
+                        row,
+                        True,
+                        bandpass_applied
                     )
                     # Get a dask.delayed object to the task graph
                     ds = (
@@ -615,9 +656,11 @@ def sentinel2_brdf(
             sensor = get_sensor_name(row)
             if params.out_path is not None:
                 out_scene_path_l3a, out_scene_path_l3b = get_collection_names(
-                    params, sensor, grid_id, row.id.split('_')[1], row
+                    params, sensor, row
                 )
-                if out_scene_path_l3a.is_file() or out_scene_path_l3b.is_file():
+                scene_3a = get_existing_filenames(out_scene_path_l3a)
+                scene_3b = get_existing_filenames(out_scene_path_l3b)
+                if scene_3a or scene_3b:
                     continue
             # Scale the data to [0,1] and get the mask
             data_slice, data_mask = slice_and_mask(data, row)
@@ -681,14 +724,12 @@ def sentinel2_brdf(
             # Finalize the attributes
             sr_brdf = dask.delayed(finalize_brdf)(sr_brdf, data_mask, attrs, data.gw.row_chunks)
             if params.out_path is not None:
-                out_scene_path = params.get_out_file(
-                    params.build_scene_id(
-                        sensor,
-                        grid_id + row.id.split('_')[1] + ''.join(row.id.split('_')[-2:]),
-                        row.date.strftime('%Y%m%d'),
-                        True,
-                        bandpass_applied
-                    )
+                out_scene_path = get_collection_name(
+                    params,
+                    sensor,
+                    row,
+                    True,
+                    bandpass_applied
                 )
                 ds = (
                     brdf_delayed_to_da(sr_brdf, data)
