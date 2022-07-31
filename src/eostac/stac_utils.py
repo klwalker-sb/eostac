@@ -5,7 +5,9 @@ import fnmatch
 from datetime import datetime
 
 import numpy as np
+from scipy.interpolate import BSpline, splrep
 import pandas as pd
+from dask.distributed import LocalCluster, Client
 import xarray as xr
 from sklearn.linear_model import TheilSenRegressor
 import attr
@@ -13,6 +15,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import json
 from affine import Affine
+import psutil
 
 
 NODATA = 32768
@@ -375,33 +378,212 @@ def save_netcdf(
     )
 
 
-def open_netcdf(
-    file_list: T.Sequence[T.Union[str, Path]],
-    chunks: int = 512
-) -> xr.DataArray:
+class open_netcdf(object):
     """Opens a collection of files as a xarray DataArray
-    """
-    darray = xr.open_mfdataset(
-        file_list,
-        concat_dim='time',
-        chunks={
-            'time': len(file_list),
-            'band': len(LANDSAT_LIKE_BAND_NAMES),
-            'y': chunks,
-            'x': chunks
-        },
-        combine='nested',
-        engine='h5netcdf',
-        preprocess=expand_time,
-        parallel=True
-    )
-    attrs = darray.attrs.copy()
 
-    # Group dates
-    return (
-        darray
-        .groupby('time')
-        .mean(skipna=True)
-        .chunk({'time': -1, 'band': -1})
-        .assign_attrs(**attrs)
+    Dask dashboard:
+        http://localhost:8787/status
+    """
+    def __init__(
+        self,
+        file_list: T.Sequence[T.Union[str, Path]],
+        chunks: int = 512,
+        n_workers: int = psutil.cpu_count(),
+        threads_per_worker: int = 1,
+        processes: bool = True
+    ):
+        self.file_list = file_list
+        self.chunks = chunks
+        self.n_workers = n_workers
+        self.threads_per_worker = threads_per_worker
+        self.processes = processes
+
+    def __repr__(self) -> str:
+        return str(self.darray)
+
+    def __enter__(self):
+        self.cluster = LocalCluster(
+            n_workers=self.n_workers,
+            threads_per_worker=self.threads_per_worker,
+            processes=self.processes
+        )
+        self.client = Client(self.cluster)
+        darray = xr.open_mfdataset(
+            self.file_list,
+            concat_dim='time',
+            chunks={
+                'time': len(self.file_list),
+                'band': len(LANDSAT_LIKE_BAND_NAMES),
+                'y': self.chunks,
+                'x': self.chunks
+            },
+            combine='nested',
+            engine='h5netcdf',
+            preprocess=expand_time,
+            parallel=True
+        )
+        self.attrs = darray.attrs.copy()
+        self.darray = (
+            darray
+            .groupby('time')
+            .mean(skipna=True)
+            .chunk({'time': -1, 'band': 1})
+        )
+
+        return self
+
+    def close(self):
+        self.darray.close()
+        self.client.close()
+        self.cluster.close()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def load(
+        self,
+        date_range: T.Optional[pd.DatetimeIndex] = None,
+        bands: T.Optional[T.Sequence[str]] = None,
+        coord_slice: T.Optional[tuple] = None,
+        compute: T.Optional[bool] = False
+    ):
+        darray = None
+        if date_range is not None:
+            darray = (
+                self.darray
+                .interpolate_na(dim='time')
+                .bfill(dim='time')
+                .ffill(dim='time')
+                .interp(time=date_range, method='cubic')
+            )
+        if bands is not None:
+            if darray is None:
+                darray = self.darray.sel(band=bands)
+            else:
+                darray = darray.sel(band=bands)
+        if coord_slice is not None:
+            coord_slice = (
+                slice(0, None),
+                slice(0, None)
+            ) + coord_slice
+            if darray is None:
+                darray = self.darray[coord_slice]
+            else:
+                darray = darray[coord_slice]
+
+        if darray is None:
+            darray = self.darray.assign_attrs(**self.attrs)
+        else:
+            darray = darray.assign_attrs(**self.attrs)
+        if compute:
+            darray = darray.load()
+
+        return darray
+
+
+def get_interp_grids(darray: xr.DataArray):
+    t = pd.DatetimeIndex(darray.time.values)
+    days = [1]
+    for tidx in range(1, len(t)):
+        days.append(days[-1] + (t[tidx] - t[tidx-1]).days)
+    df = pd.DataFrame(data=days, columns=['day'], index=t)
+    # TODO: set dates from data or user
+    # TODO: set frequency from user
+    target_range = pd.date_range('2020-7-1', '2021-7-1', freq='W')
+    df = df.reindex(target_range).reset_index().rename(columns={'index': 'date'})
+    xsparse = df[~df.day.isna()].index.values
+    xnew = df.index.values
+
+    return df, target_range, xsparse, xnew
+
+
+def detect_outliers(y: np.ndarray, nstd: float = 1.0):
+    """Detects outliers
+    """
+    d = np.diff(y)
+    d = d / y[1:] * 100.0
+    mu = d.mean()
+    std = d.std()
+    outliers = np.where(
+        (d < mu-std*nstd) | (d > mu+std*nstd)
     )
+    if outliers[0].shape[0] > 0:
+        outliers = (outliers[0] + 1).tolist()
+    else:
+        outliers = []
+
+    return outliers
+
+
+def fit_bspline(
+    y,
+    xsparse: np.ndarray,
+    xnew: np.ndarray,
+    s: float,
+    k: int
+):
+    ysparse = y[xsparse]
+    weights = np.ones_like(ysparse) + 1
+    weights[ysparse < np.percentile(ysparse, 10)] = 5
+
+    outliers_a = detect_outliers(ysparse, nstd=1.0)
+    outliers_b = detect_outliers(1-ysparse, nstd=1.0)
+    outliers = np.array(sorted(list(set(outliers_a + outliers_b))))
+    if outliers.shape[0] > 0:
+        weights[outliers] = 0.5
+    outliers_a = detect_outliers(ysparse, nstd=2.0)
+    outliers_b = detect_outliers(1-ysparse, nstd=2.0)
+    outliers = np.array(sorted(list(set(outliers_a + outliers_b))))
+    if outliers.shape[0] > 0:
+        weights[outliers] = 0.25
+
+    tck = splrep(xsparse, ysparse, s=s, k=k, w=weights)
+
+    return BSpline(*tck)(xnew)
+
+
+def smooth(darray: xr.DataArray):
+    """Smooths an image along the 'time' dimension
+    """
+    # TODO: evi2 is hardcoded
+    # Calculate an spectral index, reshape, and fill nans
+    yraw = (
+        darray
+        .gw.evi2(sensor='l7')
+        .squeeze()
+        .stack(z=('y', 'x'))
+        .transpose()
+    ).chunk({'z': 256, 'time': -1})
+
+    df, target_range, xsparse, xnew = get_interp_grids(yraw)
+    # Interpolate to the target range
+    yinterp = (
+        yraw
+        .interpolate_na(dim='time')
+        .bfill(dim='time')
+        .ffill(dim='time')
+        .interp(time=target_range, method='cubic')
+    ).load()
+    # Smooth the data
+    ysmooth = xr.apply_ufunc(
+        fit_bspline,
+        yinterp,
+        input_core_dims=[['time']],
+        output_core_dims=[['time']],
+        exclude_dims=set(('time',)),
+        kwargs={
+            'xsparse': xsparse,
+            'xnew': xnew,
+            's': 0.05,
+            'k': 3
+        },
+        dask='parallelized',
+        vectorize=True,
+        dask_gufunc_kwargs={
+            'time': xnew.shape[0]
+        },
+        output_dtypes=[np.float32]
+    ).assign_coords(time=('time', df.date))
+
+    # TODO: reshape back to an image?
+    return yraw, ysmooth#.unstack()

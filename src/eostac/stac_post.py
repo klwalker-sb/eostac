@@ -45,7 +45,6 @@ from geowombat.radiometry import (
     RadTransforms
 )
 from geowombat.radiometry.angles import get_sentinel_sensor
-from geowombat.backends.xarray_rasterio_ import open_rasterio
 # from geowombat.ml import predict
 import numpy as np
 import pandas as pd
@@ -248,19 +247,19 @@ def apply_bandpass(data: xr.DataArray, coeffs: dict) -> xr.DataArray:
     """Applies a band-pass calibration adjustment
     """
     attrs = data.attrs.copy()
+    # Create ndarrays of the coefficients
     alphas = np.array(
         [coeffs[band]['alpha'] for band in data.band.values], dtype='float64'
     )
     betas = np.array(
         [coeffs[band]['beta'] for band in data.band.values], dtype='float64'
     )
-
+    # Create DataArrays of the coefficients
     alphas = xr.DataArray(
         data=alphas,
         coords={'band': data.band.values},
         dims='band'
     )
-
     betas = xr.DataArray(
         data=betas,
         coords={'band': data.band.values},
@@ -431,6 +430,8 @@ def compute_dask_brdf(
 
 
 def brdf_delayed_to_da(sr_brdf: Delayed, data: xr.DataArray) -> xr.DataArray:
+    """Converts a dask.Delayed object to a DataArray
+    """
     return delayed_to_xarray(
         delayed_data=sr_brdf,
         shape=(data.gw.nbands, data.gw.nrows, data.gw.ncols),
