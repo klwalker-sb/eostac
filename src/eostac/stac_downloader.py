@@ -260,19 +260,19 @@ def write_stack(
                 try:
                     with rio.open(out_name):
                         pass
-                except Exception as e:
+                except Exception:
                     out_name.unlink()
-                    raise DownloadError(e)
+                    raise DownloadError('The downloaded file is corrupted.')
                 # If there was previously an error file, remove it with a successful download
                 if error_file.is_file():
                     error_file.unlink()
             else:
                 raise DownloadError('No file was created')
-        except Exception as e:
+        except DownloadError as e:
             if out_name.is_file():
                 out_name.unlink()
             with open(error_file, mode='w') as f:
-                f.write(e)
+                f.write(str(e))
 
 
 def write_time_stack(
