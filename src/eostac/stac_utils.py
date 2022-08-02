@@ -1,8 +1,12 @@
+import itertools
 import enum
 from pathlib import Path
 import typing as T
 import fnmatch
 from datetime import datetime
+import concurrent.futures
+
+from geowombat.core import ndarray_to_xarray
 
 import numpy as np
 from scipy.interpolate import BSpline, splrep
@@ -15,6 +19,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import json
 from affine import Affine
+from tqdm.auto import tqdm
 import psutil
 
 
@@ -390,13 +395,15 @@ class open_netcdf(object):
         chunks: int = 512,
         n_workers: int = psutil.cpu_count(),
         threads_per_worker: int = 1,
-        processes: bool = True
+        processes: bool = True,
+        memory_limit: str = 'auto'
     ):
         self.file_list = file_list
         self.chunks = chunks
         self.n_workers = n_workers
         self.threads_per_worker = threads_per_worker
         self.processes = processes
+        self.memory_limit = memory_limit
 
     def __repr__(self) -> str:
         return str(self.darray)
@@ -405,7 +412,8 @@ class open_netcdf(object):
         self.cluster = LocalCluster(
             n_workers=self.n_workers,
             threads_per_worker=self.threads_per_worker,
-            processes=self.processes
+            processes=self.processes,
+            memory_limit=self.memory_limit
         )
         self.client = Client(self.cluster)
         darray = xr.open_mfdataset(
@@ -424,10 +432,13 @@ class open_netcdf(object):
         )
         self.attrs = darray.attrs.copy()
         self.darray = (
-            darray
-            .groupby('time')
-            .mean(skipna=True)
-            .chunk({'time': -1, 'band': 1})
+            (
+                darray
+                .groupby('time')
+                .mean(skipna=True)
+                .chunk({'time': -1, 'band': 1})
+            )
+            .assign_attrs(**darray.attrs)
         )
 
         return self
@@ -462,6 +473,7 @@ class open_netcdf(object):
             else:
                 darray = darray.sel(band=bands)
         if coord_slice is not None:
+            # Add time and bands so slice = (time, bands, rows, columns)
             coord_slice = (
                 slice(0, None),
                 slice(0, None)
@@ -481,20 +493,17 @@ class open_netcdf(object):
         return darray
 
 
-def get_interp_grids(darray: xr.DataArray):
+def get_interp_grids(darray: xr.DataArray, date_range: pd.DatetimeIndex):
     t = pd.DatetimeIndex(darray.time.values)
     days = [1]
     for tidx in range(1, len(t)):
         days.append(days[-1] + (t[tidx] - t[tidx-1]).days)
     df = pd.DataFrame(data=days, columns=['day'], index=t)
-    # TODO: set dates from data or user
-    # TODO: set frequency from user
-    target_range = pd.date_range('2020-7-1', '2021-7-1', freq='W')
-    df = df.reindex(target_range).reset_index().rename(columns={'index': 'date'})
+    df = df.reindex(date_range).reset_index().rename(columns={'index': 'date'})
     xsparse = df[~df.day.isna()].index.values
     xnew = df.index.values
 
-    return df, target_range, xsparse, xnew
+    return df, xsparse, xnew
 
 
 def detect_outliers(y: np.ndarray, nstd: float = 1.0):
@@ -515,75 +524,181 @@ def detect_outliers(y: np.ndarray, nstd: float = 1.0):
     return outliers
 
 
-def fit_bspline(
-    y,
+def _fit_bspline(
     xsparse: np.ndarray,
     xnew: np.ndarray,
+    ydata: np.ndarray,
     s: float,
-    k: int
+    k: int,
+    weights: np.ndarray
 ):
-    ysparse = y[xsparse]
+    tck = splrep(xsparse, ydata, s=s, k=k, w=weights)
+
+    return BSpline(*tck)(xnew)
+
+
+def set_outliers_weights(ysparse: np.ndarray) -> T.Tuple[np.ndarray, np.ndarray]:
     weights = np.ones_like(ysparse) + 1
     weights[ysparse < np.percentile(ysparse, 10)] = 5
 
     outliers_a = detect_outliers(ysparse, nstd=1.0)
     outliers_b = detect_outliers(1-ysparse, nstd=1.0)
-    outliers = np.array(sorted(list(set(outliers_a + outliers_b))))
-    if outliers.shape[0] > 0:
-        weights[outliers] = 0.5
-    outliers_a = detect_outliers(ysparse, nstd=2.0)
-    outliers_b = detect_outliers(1-ysparse, nstd=2.0)
-    outliers = np.array(sorted(list(set(outliers_a + outliers_b))))
-    if outliers.shape[0] > 0:
-        weights[outliers] = 0.25
+    outliers_lower = np.array(sorted(list(set(outliers_a + outliers_b))))
+    if outliers_lower.shape[0] > 0:
+        weights[outliers_lower] = 0.5
+    outliers_c = detect_outliers(ysparse, nstd=2.0)
+    outliers_d = detect_outliers(1-ysparse, nstd=2.0)
+    outliers_upper = np.array(sorted(list(set(outliers_c + outliers_d))))
+    if outliers_upper.shape[0] > 0:
+        weights[outliers_upper] = 0.25
 
-    tck = splrep(xsparse, ysparse, s=s, k=k, w=weights)
+    outliers = np.array(
+        sorted(list(set(
+            outliers_lower.tolist() + outliers_upper.tolist()
+        )))
+    )
 
-    return BSpline(*tck)(xnew)
+    return outliers, weights
 
 
-def smooth(darray: xr.DataArray):
+def rmse_score(ytrue: np.ndarray, ypred: np.ndarray) -> np.ndarray:
+    return ((ypred - ytrue)**2).mean()**0.5
+
+
+def fit_bspline(
+    *args,
+    srange: tuple = None,
+    step: float = 0.05,
+    tol: float = 1e-3
+):
+    y, xsparse, xnew, s, k = list(itertools.chain(*args))
+
+    if srange is None:
+        srange = (0.01, 0.2)
+    ysparse = y[xsparse]
+    outliers, weights = set_outliers_weights(ysparse)
+
+    s = srange[0]
+    stop = srange[1]
+    min_score = 1e9
+    last_score = None
+    best_s = s
+    while True:
+        yhat = _fit_bspline(xsparse, xnew, ysparse, s, k, weights)
+        if outliers.shape[0] > 0:
+            rmse = rmse_score(ysparse[~outliers], yhat[~outliers])
+        else:
+            rmse = rmse_score(ysparse, yhat)
+        if last_score is not None:
+            if abs(rmse - last_score) < tol:
+                break
+            if rmse > last_score:
+                break
+        if rmse < min_score:
+            min_score = rmse
+            best_s = s
+            last_score = rmse
+
+        if s == srange[0]:
+            s += (step - s)
+        else:
+            s += step
+        if s > stop:
+            break
+
+    return np.uint16(_fit_bspline(xsparse, xnew, ysparse, best_s, k, weights)*DOWN_SCALE)
+
+
+def smooth(
+    darray: xr.DataArray,
+    vi: str,
+    date_range: pd.DatetimeIndex,
+    s: float = 0.1,
+    k: int = 3,
+    return_raw: T.Optional[bool] = False,
+    n_workers: int = psutil.cpu_count()
+):
     """Smooths an image along the 'time' dimension
     """
-    # TODO: evi2 is hardcoded
+    attrs = darray.attrs.copy()
     # Calculate an spectral index, reshape, and fill nans
     yraw = (
-        darray
-        .gw.evi2(sensor='l7')
+        getattr(darray.gw, vi)(sensor='l7')
         .squeeze()
         .stack(z=('y', 'x'))
         .transpose()
-    ).chunk({'z': 256, 'time': -1})
+    )
+    if return_raw:
+        yraw = yraw.load()
 
-    df, target_range, xsparse, xnew = get_interp_grids(yraw)
+    df, xsparse, xnew = get_interp_grids(yraw, date_range)
     # Interpolate to the target range
     yinterp = (
         yraw
+        .chunk({'z': 256, 'time': -1})
         .interpolate_na(dim='time')
         .bfill(dim='time')
         .ffill(dim='time')
-        .interp(time=target_range, method='cubic')
-    ).load()
+        .interp(time=date_range, method='cubic')
+    )
+    if not return_raw:
+        yinterp = yinterp.load()
     # Smooth the data
-    ysmooth = xr.apply_ufunc(
-        fit_bspline,
-        yinterp,
-        input_core_dims=[['time']],
-        output_core_dims=[['time']],
-        exclude_dims=set(('time',)),
-        kwargs={
-            'xsparse': xsparse,
-            'xnew': xnew,
-            's': 0.05,
-            'k': 3
-        },
-        dask='parallelized',
-        vectorize=True,
-        dask_gufunc_kwargs={
-            'time': xnew.shape[0]
-        },
-        output_dtypes=[np.float32]
-    ).assign_coords(time=('time', df.date))
+    iters = (
+        (y, xsparse, xnew, s, k) for y in yinterp.values
+    )
+    ysmooth = []
+    pbar_chunk = 500
+    total_iters = yinterp.shape[0]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as executor:
+        with tqdm(total=total_iters, position=1, desc='Smooth', leave=False) as pbar:
+            for i, result in enumerate(executor.map(fit_bspline, iters, chunksize=1_000)):
+                ysmooth.append(result)
+                if i % pbar_chunk == 0:
+                    if total_iters - i < pbar_chunk:
+                        pbar.update(total_iters-i)
+                    else:
+                        pbar.update(pbar_chunk)
+    ysmooth = np.array(ysmooth)
+    ysmooth = np.ascontiguousarray(
+        ysmooth.T.reshape(
+            ysmooth.shape[1], darray.gw.nrows, darray.gw.ncols
+        )
+    )
+    ysmooth = (
+        ndarray_to_xarray(
+            darray,
+            ysmooth,
+            band_names=df.date.values
+        )
+        .rename({'band': 'time'})
+    )
 
-    # TODO: reshape back to an image?
-    return yraw, ysmooth#.unstack()
+    # ysmooth = (
+    #     xr.apply_ufunc(
+    #         fit_bspline,
+    #         yinterp,
+    #         input_core_dims=[['time']],
+    #         output_core_dims=[['time']],
+    #         exclude_dims=set(('time',)),
+    #         kwargs={
+    #             'xsparse': xsparse,
+    #             'xnew': xnew,
+    #             's': s,
+    #             'k': k
+    #         },
+    #         dask='forbidden',
+    #         vectorize=True,
+    #         dask_gufunc_kwargs={
+    #             'time': xnew.shape[0]
+    #         },
+    #         output_dtypes=[np.uint16]
+    #     )
+    #     .assign_coords(time=('time', df.date))
+    #     .assign_attrs(**attrs)
+    # )
+
+    if return_raw:
+        return yraw.unstack(), ysmooth.unstack()
+    else:
+        return ysmooth

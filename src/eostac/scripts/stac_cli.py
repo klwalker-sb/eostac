@@ -4,12 +4,14 @@ import enum
 from ..stac_downloader import download_data
 from ..stac_post import load_data, FileFormat
 from ..stac_adjust import adjust_data
+from ..stac_smooth import smooth_data
 
 
 class Processes(enum.Enum):
     download = 'download'
     brdf = 'brdf'
     adjust = 'adjust'
+    smooth = 'smooth'
 
 
 def main():
@@ -167,6 +169,36 @@ def main():
                 help='Whether to only check and download errors (default: %(default)s)',
                 action='store_true'
             )
+        elif process == Processes.smooth:
+            subparser.add_argument(
+                '-p', '--project-path', dest='project_path', help='The input project path (default: %(default)s)'
+            )
+            subparser.add_argument(
+                '--vi', dest='vi', help='The vegetation index (default: %(default)s)', default='evi2'
+            )
+            subparser.add_argument(
+                '--bands', dest='bands', help='The bands to open (default: %(default)s)', nargs='+'
+            )
+            subparser.add_argument(
+                '--read-chunks', dest='read_chunks', help='The read chunk size (default: %(default)s)',
+                default=512, type=int
+            )
+            subparser.add_argument(
+                '--proc-chunks', dest='proc_chunks', help='The processing chunk size (default: %(default)s)',
+                default=128, type=int
+            )
+            subparser.add_argument(
+                '--freq', dest='freq', help='The interpolation frequency (default: %(default)s)',
+                default='SMS', choices=['M', 'MS', 'SM', 'SMS', 'W']
+            )
+            subparser.add_argument(
+                '--target-day', dest='target_day', help='The target day (m-d) (default: %(default)s)',
+                default='7-1'
+            )
+            subparser.add_argument(
+                '--memory-limit', dest='memory_limit', help='The memory limit per worker (default: %(default)s)',
+                default='auto'
+            )
 
     args = parser.parse_args()
 
@@ -176,6 +208,8 @@ def main():
         load_data(args)
     elif args.process == Processes.adjust.value:
         adjust_data(args)
+    elif args.process == Processes.smooth.value:
+        smooth_data(args)
 
 
 if __name__ == '__main__':
