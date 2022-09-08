@@ -189,7 +189,7 @@ def main():
             )
             subparser.add_argument(
                 '--freq', dest='freq', help='The interpolation frequency (default: %(default)s)',
-                default='SMS', choices=['M', 'MS', 'SM', 'SMS', 'W']
+                default='SMS', choices=['M', 'MS', 'SM', 'SMS', 'W', 'D']
             )
             subparser.add_argument(
                 '--target-day', dest='target_day', help='The target day (m-d) (default: %(default)s)',

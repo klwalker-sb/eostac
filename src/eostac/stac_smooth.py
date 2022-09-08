@@ -114,12 +114,13 @@ def smooth_series(
                     k=3
                 )
                 # Write to file
-                profile['count'] = ysmooth.sel(time=target_slice).time.shape[0]
+                ysmooth = ysmooth.sel(time=target_slice).values[::10]
+                profile['count'] = ysmooth.shape[0]
                 profile['dtype'] = ysmooth.dtype.name
                 mode = 'w' if not filename.is_file() else 'r+'
                 with rio.open(filename, mode=mode, **profile) as dst:
                     dst.write(
-                        ysmooth.sel(time=target_slice).data,
+                        ysmooth,
                         indexes=list(range(1, profile['count']+1)),
                         window=w
                     )

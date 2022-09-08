@@ -4,6 +4,7 @@ import typing as T
 from abc import ABC
 import concurrent.futures
 
+from .errors import DownloadError
 from .stac_utils import (
     LandsatBands,
     Sentinel2Bands,
@@ -27,23 +28,6 @@ from shapely.geometry import CAP_STYLE, JOIN_STYLE
 # from s2cloudless import S2PixelCloudDetector
 import attr
 from tqdm.auto import tqdm
-
-
-class DownloadError(Exception):
-    """Raised when an image can not be downloaded
-    """
-    def __init__(
-        self,
-        error,
-        message='The image could not be downloaded.'
-    ):
-        self.error = error
-        self.message = message
-        super().__init__(self.message)
-
-    def __str__(self):
-        return f"{self.error}: {self.message}"
-
 
 
 @attr.s
