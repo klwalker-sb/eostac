@@ -377,23 +377,12 @@ def save_netcdf(
 ) -> Delayed:
     """Saves a collection of xarray Datasets as NetCDF files
     """
-    xr.save_mfdataset(
+    return xr.save_mfdataset(
         datasets,
         filenames,
         mode='w',
         **kwargs
     )
-    # Check output files
-    for fn in filenames:
-        error_file = fn.parent.parent / f'{fn.stem}_ERROR.txt'
-        try:
-            with xr.open_dataset(fn, chunks={'band': -1, 'y': 1024, 'x': 1024}) as ds:
-                res = ds.to_array(dim='band')
-        except Exception as e:
-            if fn.is_file():
-                fn.unlink()
-            with open(error_file, mode='w') as f:
-                f.write(str(e))
 
 
 class open_netcdf(object):
