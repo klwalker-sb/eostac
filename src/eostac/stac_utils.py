@@ -12,6 +12,7 @@ from geowombat.core import ndarray_to_xarray
 import numpy as np
 from scipy.interpolate import BSpline, splrep
 import pandas as pd
+from dask.delayed import Delayed
 from dask.distributed import LocalCluster, Client
 import xarray as xr
 from sklearn.linear_model import TheilSenRegressor
@@ -373,7 +374,7 @@ def save_netcdf(
     datasets: T.Sequence[xr.Dataset],
     filenames: T.Sequence[T.Union[str, Path]],
     **kwargs
-):
+) -> Delayed:
     """Saves a collection of xarray Datasets as NetCDF files
     """
     xr.save_mfdataset(

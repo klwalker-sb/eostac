@@ -410,7 +410,7 @@ def compute_dask_brdf(
             )
         else:
             tasks, filenames = map(list, zip(*io_tasks.values()))
-            results = dask.compute(
+            dask.compute(
                 save_netcdf(
                     tasks,
                     filenames,
@@ -419,6 +419,17 @@ def compute_dask_brdf(
                 ),
                 num_workers=params.n_workers
             )
+    # Check output files
+    for fn in filenames:
+        error_file = fn.parent.parent / f'{fn.stem}_ERROR.txt'
+        try:
+            with xr.open_dataset(fn, chunks={'band': -1, 'y': 1024, 'x': 1024}) as ds:
+                res = ds.to_array(dim='band')
+        except Exception as e:
+            if fn.is_file():
+                fn.unlink()
+            with open(error_file, mode='w') as f:
+                f.write(str(e))
 
         # visualize([prof, rprof, cprof], filename='/mnt/c/Users/jbgra/Documents/data/stac/profile.html')
 
@@ -720,7 +731,6 @@ def sentinel2_brdf(
                     if coeffs is not None:
                         sr_brdf = dask.delayed(apply_bandpass)(sr_brdf, coeffs)
                         bandpass_applied = True
-
             # Finalize the attributes
             sr_brdf = dask.delayed(finalize_brdf)(sr_brdf, data_mask, attrs, data.gw.row_chunks)
             if params.out_path is not None:
