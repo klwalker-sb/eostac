@@ -220,10 +220,8 @@ def write_stack(
             (
                 data
                 .assign_coords(time=pd.DatetimeIndex(data.time.values).round('D'))
-                .assign_attrs(
-                    crs=data.gw.crs_to_pyproj.to_proj4(),
-                    nodatavals=(NODATA,) * data.gw.nbands
-                )
+                .gw.assign_nodata_attrs(NODATA)
+                .assign_attrs(**{'crs': data.gw.crs_to_pyproj.to_wkt()})
                 .isel(time=scene_idx)
                 .squeeze()
                 .transpose('band', 'y', 'x')
@@ -244,15 +242,22 @@ def write_stack(
                 try:
                     with rio.open(out_name):
                         pass
+                    # Successful open at this point
+                    # If there was previously an error file, remove it
+                    if error_file.is_file():
+                        error_file.unlink()
                 except Exception:
+                    # Remove the corrupted file
                     out_name.unlink()
+                    # Write an error file
+                    with open(error_file, mode='w') as f:
+                        f.write(str(e))
+
                     raise DownloadError('The downloaded file is corrupted.')
-                # If there was previously an error file, remove it with a successful download
-                if error_file.is_file():
-                    error_file.unlink()
             else:
                 raise DownloadError('No file was created')
         except DownloadError as e:
+            # Remove the possibly incomplete or corrupted file
             if out_name.is_file():
                 out_name.unlink()
             with open(error_file, mode='w') as f:
