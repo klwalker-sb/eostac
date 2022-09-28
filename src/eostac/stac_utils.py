@@ -6,7 +6,6 @@ import fnmatch
 from datetime import datetime
 import concurrent.futures
 
-from .errors import CorruptedError
 from geowombat.core import ndarray_to_xarray
 
 import numpy as np
