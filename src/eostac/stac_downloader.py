@@ -4,7 +4,7 @@ import typing as T
 from abc import ABC
 import concurrent.futures
 
-from .errors import DownloadError
+from .errors import CorruptedError, DownloadError
 from .stac_utils import (
     LandsatBands,
     Sentinel2Bands,
@@ -219,9 +219,6 @@ def write_stack(
         try:
             (
                 data
-                .assign_coords(time=pd.DatetimeIndex(data.time.values).round('D'))
-                .gw.assign_nodata_attrs(NODATA)
-                .assign_attrs(**{'crs': data.gw.crs_to_pyproj.to_wkt()})
                 .isel(time=scene_idx)
                 .squeeze()
                 .transpose('band', 'y', 'x')
@@ -246,14 +243,14 @@ def write_stack(
                     # If there was previously an error file, remove it
                     if error_file.is_file():
                         error_file.unlink()
-                except Exception:
+                except Exception as e:
                     # Remove the corrupted file
                     out_name.unlink()
                     # Write an error file
                     with open(error_file, mode='w') as f:
                         f.write(str(e))
 
-                    raise DownloadError('The downloaded file is corrupted.')
+                    raise CorruptedError('The downloaded file is corrupted.')
             else:
                 raise DownloadError('No file was created')
         except DownloadError as e:
@@ -287,6 +284,20 @@ def write_time_stack(
         if df.empty:
             return
 
+    data = (
+        data
+        .gw.assign_nodata_attrs(NODATA)
+        .assign_attrs(**{
+            'time': pd.DatetimeIndex(data.time.values).round('D'),
+            'crs': data.gw.crs_to_pyproj.to_wkt()
+        })
+    )
+
+    # from tqdm.dask import TqdmCallback
+    # with TqdmCallback(desc=desc):
+    #     # Download the data into memory
+    #     data.load(num_workers=threads_per_worker)
+
     if n_workers == 1:
         for row in tqdm(
             df.sort_values('date').itertuples(),
@@ -312,7 +323,7 @@ def write_time_stack(
             ) for row in df.sort_values('date').itertuples()
         )
 
-        with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as executor:
             futures = [executor.submit(write_stack, *args) for args in data_gen]
             with tqdm(
                 total=len(df.index),
