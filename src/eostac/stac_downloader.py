@@ -244,16 +244,11 @@ def write_stack(
                     if error_file.is_file():
                         error_file.unlink()
                 except Exception as e:
-                    # Remove the corrupted file
-                    out_name.unlink()
-                    # Write an error file
-                    with open(error_file, mode='w') as f:
-                        f.write(str(e))
-
-                    raise CorruptedError('The downloaded file is corrupted.')
+                    raise CorruptedError(f'The downloaded file is corrupted because of {e}.')
             else:
                 raise DownloadError('No file was created')
-        except DownloadError as e:
+
+        except (CorruptedError, DownloadError) as e:
             # Remove the possibly incomplete or corrupted file
             if out_name.is_file():
                 out_name.unlink()
