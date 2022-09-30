@@ -541,13 +541,16 @@ def landsat_brdf(
                 # BRDF normalization
                 sr_brdf = dask.delayed(BR.norm_brdf)(
                     data_slice,
-                    angle_data.sza,
-                    angle_data.saa,
-                    angle_data.vza,
-                    angle_data.vaa,
+                    solar_za=angle_data.sza,
+                    solar_az=angle_data.saa,
+                    sensor_za=angle_data.vza,
+                    sensor_az=angle_data.vaa,
                     sensor=rad_sensor,
                     wavelengths=data.band.values.tolist(),
+                    # Return data as [0,10000].
                     out_range=DOWN_SCALE,
+                    # The data are already scaled [0,1].
+                    scale_factor=1.0,
                     src_nodata=NODATA,
                     dst_nodata=NODATA
                 )
