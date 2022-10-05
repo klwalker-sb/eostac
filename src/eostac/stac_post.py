@@ -1,14 +1,12 @@
-import chunk
-from fileinput import filename
 from pathlib import Path
 import tempfile
 from collections import namedtuple
 import enum
 from dataclasses import dataclass
-from turtle import pos
 import typing as T
 import warnings
 from datetime import date
+import logging
 
 from .stac_downloader import NODATA
 from .stac_downloader import LandsatParams, Sentinel2Params
@@ -33,6 +31,7 @@ from .stac_utils import (
     get_netcdf_encoding,
     save_netcdf
 )
+from .utils import set_color_logger
 
 import geowombat as gw
 from geowombat.backends.xarray_ import delayed_to_xarray
@@ -61,6 +60,7 @@ from tqdm.auto import tqdm
 from tqdm.dask import TqdmCallback
 # import matplotlib.pyplot as plt
 
+logger = set_color_logger(__name__)
 
 BR = BRDF()
 LA = LinearAdjustments()
@@ -137,7 +137,7 @@ IO_PARAMETERS = {
             '_FillValue': NODATA
         },
         'kwargs': {
-            'compute': False,
+            'compute': True,
             'format': 'NETCDF4',
             'engine': 'h5netcdf'
         }
@@ -164,7 +164,7 @@ class Parameters(object):
 
     def __attrs_post_init__(self):
         if self.out_path is not None:
-            self.out_path = Path(self.out_path)
+            self.out_path = Path(self.out_path).absolute()
             self.out_path.mkdir(parents=True, exist_ok=True)
 
     def build_scene_id(
@@ -182,7 +182,7 @@ class Parameters(object):
         return scene_id
 
     def get_out_file(self, name: str) -> Path:
-        return self.out_path / f"{name}{self.io['extension']}"
+        return (self.out_path / f"{name}{self.io['extension']}").absolute()
 
     @property
     def io(self):
@@ -380,8 +380,8 @@ def slice_and_mask(data: xr.DataArray, row) -> T.Tuple[xr.DataArray, xr.DataArra
 
 
 def get_metadata_and_filepath(row):
-    metadata = Path(row.metadata)
-    filename = metadata.parent / f'{row.id}.tif'
+    metadata = Path(row.metadata).absolute()
+    filename = (metadata.parent / f'{row.id}.tif').absolute()
 
     return metadata, filename
 
@@ -419,6 +419,7 @@ def compute_dask_brdf(
                 ),
                 num_workers=params.n_workers
             )
+
     # Check output files
     for fn in filenames:
         error_file = fn.parent.parent / f'{fn.stem}_ERROR.txt'
@@ -505,8 +506,9 @@ def landsat_brdf(
                 data_slice, data_mask = slice_and_mask(data, row)
 
                 metadata, filename = get_metadata_and_filepath(row)
-                assert filename.is_file() and metadata.is_file(), \
-                    'Both the image and metadata files must exist.'
+                if not (filename.is_file() and metadata.is_file()):
+                    logger.warning('Both the image and metadata files must exist.')
+                    continue
 
                 # Create a temporary directory to save files to
                 tmp_dir = tempfile.TemporaryDirectory()
@@ -516,23 +518,27 @@ def landsat_brdf(
                 # Create an image reference for the angle files
                 ref_image, ref_info = create_image_reference(
                     filename,
-                    Path(tmp_dir.name),
+                    Path(tmp_dir.name).absolute(),
                     data.gw.row_chunks
                 )
                 # Create the angle files
-                angle_data = landsat_pixel_angles(
-                    angle_coeff,
-                    ref_image,
-                    tmp_dir.name,
-                    meta.sensor,
-                    l57_angles_path=str(angle_paths.l57_angles_path),
-                    l8_angles_path=str(angle_paths.l8_angles_path),
-                    subsample=params.subsample,
-                    resampling=params.resampling,
-                    num_workers=1,
-                    verbose=0,
-                    chunks=data.gw.row_chunks
-                )
+                try:
+                    angle_data = landsat_pixel_angles(
+                        str(Path(angle_coeff).absolute()),
+                        ref_image,
+                        tmp_dir.name,
+                        meta.sensor,
+                        l57_angles_path=str(angle_paths.l57_angles_path),
+                        l8_angles_path=str(angle_paths.l8_angles_path),
+                        subsample=params.subsample,
+                        resampling=params.resampling,
+                        num_workers=1,
+                        verbose=0,
+                        chunks=data.gw.row_chunks
+                    )
+                except ValueError as e:
+                    raise ValueError(e)
+
                 if meta.sensor in ('l8', 'l9'):
                     rad_sensor = f'{meta.sensor}l7'
                 else:
@@ -540,7 +546,7 @@ def landsat_brdf(
 
                 # BRDF normalization
                 sr_brdf = dask.delayed(BR.norm_brdf)(
-                    data_slice,
+                    data_slice.drop_vars('time'),
                     solar_za=angle_data.sza,
                     solar_az=angle_data.saa,
                     sensor_za=angle_data.vza,
@@ -680,8 +686,9 @@ def sentinel2_brdf(
             data_slice, data_mask = slice_and_mask(data, row)
 
             metadata, filename = get_metadata_and_filepath(row)
-            assert filename.is_file() and metadata.is_file(), \
-                'Both the image and metadata files must exist.'
+            if not (filename.is_file() and metadata.is_file()):
+                logger.warning('Both the image and metadata files must exist.')
+                continue
 
             # Create a temporary directory to save files to
             tmp_dir = tempfile.TemporaryDirectory()
@@ -689,12 +696,12 @@ def sentinel2_brdf(
             # Create an image reference for the angle files
             ref_image = create_image_reference(
                 filename,
-                Path(tmp_dir.name),
+                Path(tmp_dir.name).absolute(),
                 data.gw.row_chunks
             )[0]
             # Create the angle files
             angle_data = sentinel_pixel_angles(
-                metadata,
+                str(Path(metadata).absolute()),
                 ref_image,
                 nodata=-32768,
                 num_workers=1,
@@ -824,9 +831,9 @@ def setup_paths(args) -> Data:
     }
 
     if args.coeffs_path is None:
-        project_parent = Path(args.project_path).parent
+        project_parent = Path(args.project_path).absolute().parent
     else:
-        project_parent = Path(args.coeffs_path)
+        project_parent = Path(args.coeffs_path).absolute()
 
     l5_to_l8_coeffs_path = (
         SensorPaths(project_parent).out_path / f'{args.coeffs_prefix}{SensorPaths(project_parent).l5_to_l8_coefficients.name}'
@@ -861,6 +868,7 @@ def setup_paths(args) -> Data:
             'mtl_txt': mtl_txt,
             'mtl_xml': mtl_xml
         })
+
     if sentinel2_scene_info.is_file():
         sentinel2_df = read_df(sentinel2_scene_info)
         sentinel2_df = sentinel2_df[time_slice]
