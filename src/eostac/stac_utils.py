@@ -253,14 +253,14 @@ class SensorPaths(object):
 
     @property
     def landsat(self) -> Path:
-        lpath = Path(self.out_path) / SensorPathsEnum.landsat.value
+        lpath = (Path(self.out_path) / SensorPathsEnum.landsat.value).absolute()
         self.mkdir(lpath)
 
         return lpath
 
     @property
     def sentinel2(self) -> Path:
-        s2path = Path(self.out_path) / SensorPathsEnum.sentinel2.value
+        s2path = (Path(self.out_path) / SensorPathsEnum.sentinel2.value).absolute()
         self.mkdir(s2path)
 
         return s2path
