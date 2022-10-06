@@ -370,11 +370,21 @@ def get_existing_filenames(filepath: Path) -> list:
 
 def slice_and_mask(data: xr.DataArray, row) -> T.Tuple[xr.DataArray, xr.DataArray]:
     # Scale the data to [0,1]
-    data_slice = scale_data(
+    data_slice = (
         data.sel(time=row.date)
-    )
+        .drop_vars('time')
+        .gw.set_nodata(
+            src_nodata=np.nan,
+            dst_nodata=np.nan,
+            out_range=(0, 1),
+            dtype='float64',
+            scale_factor=UP_SCALE
+        )
+    ).fillna(NODATA).gw.assign_nodata_attrs(NODATA)
     # Get the data mask
-    data_mask = xr.where(data_slice == NODATA, 0, 1)
+    # clear = 1
+    # no data = 0
+    data_mask = (~data_slice.isnull()).astype('uint8')
 
     return data_slice, data_mask
 
@@ -546,7 +556,7 @@ def landsat_brdf(
 
                 # BRDF normalization
                 sr_brdf = dask.delayed(BR.norm_brdf)(
-                    data_slice.drop_vars('time'),
+                    data_slice,
                     solar_za=angle_data.sza,
                     solar_az=angle_data.saa,
                     sensor_za=angle_data.vza,
