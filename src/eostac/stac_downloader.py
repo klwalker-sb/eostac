@@ -211,9 +211,13 @@ def write_stack(
     """Writes a single time band stack to file
     """
     out_name = out_path / f"{row_id}.tif"
+    error_file = out_path.parent.parent / f'{Path(out_name).parent.parent.name}_{Path(out_name).stem}_ERROR.txt'
+    if error_file.is_file():
+        if out_name.is_file():
+            out_name.unlink()
+        error_file.unlink()
     if not out_name.is_file():
         # Index by scene id because it is always unique
-        error_file = out_path.parent.parent / f'{Path(out_name).parent.parent.name}_{Path(out_name).stem}_ERROR.txt'
         scene_idx = data.id.values.tolist().index(row_id)
         try:
             (
@@ -233,9 +237,9 @@ def write_stack(
                     }
                 )
             )
-            # Ensure the file is not corrupted
             if out_name.is_file():
                 try:
+                    # Ensure the file is not corrupted
                     with gw.open(out_name) as src:
                         if (src.min().data.compute() == NODATA) & (src.max().data.compute() == NODATA):
                             raise ValueError('The image is empty.')
@@ -248,11 +252,13 @@ def write_stack(
             else:
                 raise DownloadError('No file was created')
 
-        except (CorruptedError, DownloadError) as e:
-            if not e.endswith('The image is empty.'):
-                # Remove the possibly incomplete or corrupted file
-                if out_name.is_file():
-                    out_name.unlink()
+        except (CorruptedError, DownloadError, ValueError) as e:
+            if out_name.is_file():
+                out_name.unlink()
+            if e.endswith('The image is empty.'):
+                if error_file.is_file():
+                    error_file.unlink()
+            else:
                 with open(error_file, mode='w') as f:
                     f.write(str(e))
 
