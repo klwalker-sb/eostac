@@ -137,7 +137,7 @@ IO_PARAMETERS = {
             '_FillValue': NODATA
         },
         'kwargs': {
-            'compute': True,
+            'compute': False,
             'format': 'NETCDF4',
             'engine': 'h5netcdf'
         }
@@ -434,8 +434,8 @@ def compute_dask_brdf(
     for fn in filenames:
         error_file = fn.parent.parent / f'{fn.stem}_ERROR.txt'
         try:
-            with xr.open_dataset(fn, chunks={'band': -1, 'y': 1024, 'x': 1024}) as ds:
-                res = ds.to_array(dim='band')
+            with gw.open(fn, chunks={'band': -1, 'y': 1024, 'x': 1024}) as ds:
+                res = ds
         except Exception as e:
             if fn.is_file():
                 fn.unlink()
