@@ -15,12 +15,11 @@ from .stac_utils import (
     NODOWNLOAD
 )
 
+import geowombat as gw
 from geowombat.core.stac import open_stac
-# from geowombat.ml.transformers import Stackerizer
 
 import pandas as pd
 import geopandas as gpd
-import rasterio as rio
 from rasterio.enums import Resampling
 import xarray as xr
 import pyproj
@@ -237,8 +236,9 @@ def write_stack(
             # Ensure the file is not corrupted
             if out_name.is_file():
                 try:
-                    with rio.open(out_name):
-                        pass
+                    with gw.open(out_name) as src:
+                        if (src.min().data.compute() == NODATA) & (src.max().data.compute() == NODATA):
+                            raise ValueError('The image is empty.')
                     # Successful open at this point
                     # If there was previously an error file, remove it
                     if error_file.is_file():
@@ -249,11 +249,12 @@ def write_stack(
                 raise DownloadError('No file was created')
 
         except (CorruptedError, DownloadError) as e:
-            # Remove the possibly incomplete or corrupted file
-            if out_name.is_file():
-                out_name.unlink()
-            with open(error_file, mode='w') as f:
-                f.write(str(e))
+            if not e.endswith('The image is empty.'):
+                # Remove the possibly incomplete or corrupted file
+                if out_name.is_file():
+                    out_name.unlink()
+                with open(error_file, mode='w') as f:
+                    f.write(str(e))
 
 
 def write_time_stack(
