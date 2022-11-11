@@ -1,5 +1,26 @@
 import logging
 
+from joblib import Parallel
+from tqdm.auto import tqdm
+
+
+class TqdmParallel(Parallel):
+    """A tqdm progress bar for joblib Parallel tasks
+    Reference:
+        https://stackoverflow.com/questions/37804279/how-can-we-use-tqdm-in-a-parallel-execution-with-joblib
+    """
+    def __init__(self, tqdm_kwargs: dict, **joblib_kwargs):
+        self.tqdm_kwargs = tqdm_kwargs
+        super().__init__(**joblib_kwargs)
+
+    def __call__(self, *args, **kwargs):
+        with tqdm(**self.tqdm_kwargs) as self._pbar:
+            return Parallel.__call__(self, *args, **kwargs)
+
+    def print_progress(self):
+        self._pbar.n = self.n_completed_tasks
+        self._pbar.refresh()
+
 
 class ColorFormatter(logging.Formatter):
     """Reference:
