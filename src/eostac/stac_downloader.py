@@ -2,7 +2,6 @@ from pathlib import Path
 import enum
 import typing as T
 from abc import ABC
-import concurrent.futures
 
 from .errors import CorruptedError, DownloadError
 from .stac_utils import (
@@ -14,6 +13,7 @@ from .stac_utils import (
     NODATA,
     NODOWNLOAD
 )
+from .utils import TqdmParallel
 
 import geowombat as gw
 from geowombat.core.stac import open_stac
@@ -27,6 +27,7 @@ from shapely.geometry import CAP_STYLE, JOIN_STYLE
 # from s2cloudless import S2PixelCloudDetector
 import attr
 from tqdm.auto import tqdm
+from joblib import delayed, parallel_backend
 
 
 @attr.s
@@ -240,9 +241,8 @@ def write_stack(
             if out_name.is_file():
                 try:
                     # Ensure the file is not corrupted
-                    with gw.open(out_name) as src:
-                        if (src.min().data.compute() == NODATA) & (src.max().data.compute() == NODATA):
-                            raise ValueError('The image is empty.')
+                    with gw.open(out_name):
+                        pass
                     # Successful open at this point
                     # If there was previously an error file, remove it
                     if error_file.is_file():
@@ -325,16 +325,19 @@ def write_time_stack(
             ) for row in df.sort_values('date').itertuples()
         )
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as executor:
-            futures = [executor.submit(write_stack, *args) for args in data_gen]
-            with tqdm(
-                total=len(df.index),
-                position=tqdm_extra_position,
-                desc=desc
-            ) as pbar:
-                for future in concurrent.futures.as_completed(futures):
-                    future.result()
-                    pbar.update(1)
+        with parallel_backend(
+            backend='loky',
+            n_jobs=n_workers
+        ):
+            with TqdmParallel(
+                tqdm_kwargs={
+                    'total': len(df.index),
+                    'desc': desc
+                }
+            ) as pool:
+                __ = pool(
+                    delayed(write_stack)(*args) for args in data_gen
+                )
 
 
 def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
