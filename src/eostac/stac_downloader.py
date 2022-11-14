@@ -13,7 +13,7 @@ from .stac_utils import (
     NODATA,
     NODOWNLOAD
 )
-from .utils import TqdmParallel
+from .utils import TqdmParallel, set_color_logger
 
 import geowombat as gw
 from geowombat.core.stac import open_stac
@@ -21,6 +21,7 @@ from geowombat.core.stac import open_stac
 import pandas as pd
 import geopandas as gpd
 from rasterio.enums import Resampling
+from rasterio.errors import RasterioIOError
 import xarray as xr
 import pyproj
 from shapely.geometry import CAP_STYLE, JOIN_STYLE
@@ -28,6 +29,9 @@ from shapely.geometry import CAP_STYLE, JOIN_STYLE
 import attr
 from tqdm.auto import tqdm
 from joblib import delayed, parallel_backend
+
+
+logger = set_color_logger(__name__)
 
 
 @attr.s
@@ -212,7 +216,8 @@ def write_stack(
     """Writes a single time band stack to file
     """
     out_name = out_path / f"{row_id}.tif"
-    error_file = out_path.parent.parent / f'{Path(out_name).parent.parent.name}_{Path(out_name).stem}_ERROR.txt'
+    error_file = out_path.parent.parent / 'errors' / f'{Path(out_name).parent.parent.name}_{Path(out_name).stem}_ERROR.txt'
+    error_file.parent.mkdir(parents=True, exist_ok=True)
     if error_file.is_file():
         if out_name.is_file():
             out_name.unlink()
@@ -221,23 +226,26 @@ def write_stack(
         # Index by scene id because it is always unique
         scene_idx = data.id.values.tolist().index(row_id)
         try:
-            (
-                data
-                .isel(time=scene_idx)
-                .squeeze()
-                .transpose('band', 'y', 'x')
-                .gw.save(
-                    out_name,
-                    overwrite=True,
-                    compression='lzw',
-                    num_workers=threads_per_worker,
-                    log_progress=False,
-                    tqdm_kwargs={
-                        'position': tqdm_extra_position+2,
-                        'desc': 'Chunks'
-                    }
+            try:
+                (
+                    data
+                    .isel(time=scene_idx)
+                    .squeeze()
+                    .transpose('band', 'y', 'x')
+                    .gw.save(
+                        out_name,
+                        overwrite=True,
+                        compression='lzw',
+                        num_workers=threads_per_worker,
+                        log_progress=False,
+                        tqdm_kwargs={
+                            'position': tqdm_extra_position+2,
+                            'desc': 'Chunks'
+                        }
+                    )
                 )
-            )
+            except (RasterioIOError, RuntimeError, ValueError) as e:
+                raise DownloadError(e)
             if out_name.is_file():
                 try:
                     # Ensure the file is not corrupted
@@ -252,10 +260,10 @@ def write_stack(
             else:
                 raise DownloadError('No file was created')
 
-        except (CorruptedError, DownloadError, ValueError) as e:
+        except (CorruptedError, DownloadError) as e:
             if out_name.is_file():
                 out_name.unlink()
-            if e.endswith('The image is empty.'):
+            if e.message.endswith('The image is empty.'):
                 if error_file.is_file():
                     error_file.unlink()
             else:
@@ -280,7 +288,7 @@ def write_time_stack(
     data = rechunk(data, chunks)
 
     if errors_only:
-        df['error_file'] = out_path.parent / (f'{out_path.parent.name}_' + df.id.map(str) + '_ERROR.txt')
+        df['error_file'] = out_path.parent / 'errors' / (f'{out_path.parent.name}_' + df.id.map(str) + '_ERROR.txt')
         df['error_file_exists'] = df.error_file.apply(lambda x: x.is_file())
         df = df.loc[df.error_file_exists]
         if df.empty:
