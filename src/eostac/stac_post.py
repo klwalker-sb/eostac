@@ -869,6 +869,9 @@ def setup_paths(args) -> Data:
     if landsat_scene_info.is_file():
         landsat_df = read_df(landsat_scene_info)
         landsat_df = landsat_df[time_slice]
+        exist_mask = [Path(landsat_path / f"{row.id}.tif").is_file() for row in landsat_df.itertuples()]
+        if not all(exist_mask):
+            landsat_df = landsat_df[exist_mask]
         # Full paths are needed for the angle creation tools
         ang = [str(landsat_path / Path(row.ang).name) for row in landsat_df.itertuples()]
         mtl_txt = [str(landsat_path / Path(landsat_df.iloc[i]['mtl.txt']).name) for i in range(len(landsat_df.index))]
@@ -882,6 +885,9 @@ def setup_paths(args) -> Data:
     if sentinel2_scene_info.is_file():
         sentinel2_df = read_df(sentinel2_scene_info)
         sentinel2_df = sentinel2_df[time_slice]
+        exist_mask = [Path(sentinel2_path / f"{row.id}.tif").is_file() for row in sentinel2_df.itertuples()]
+        if not all(exist_mask):
+            sentinel2_df = sentinel2_df[exist_mask]
         meta = [str(sentinel2_path / Path(row.metadata).name) for row in sentinel2_df.itertuples()]
         sentinel2_df = sentinel2_df.assign(**{
             'metadata': meta

@@ -55,7 +55,7 @@ def main():
             subparser.add_argument(
                 '-bb', '--bounds-buffer', dest='bounds_buffer',
                 help='A buffer to apply around the bounds (default: %(default)s)',
-                default=0, type=int
+                default=0, type=float
             )
             subparser.add_argument(
                 '--epsg', dest='epsg',

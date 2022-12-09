@@ -40,7 +40,7 @@ class Parameters(object):
     """
     bounds: T.Union[str, Path, T.Sequence[float]] = attr.ib(default=None)
     bounds_query: str = attr.ib(default=None)
-    bounds_buffer: int = attr.ib(default=0, converter=int)
+    bounds_buffer: float = attr.ib(default=0, converter=float)
     out_path: Path = attr.ib(default=None, converter=Path)
     start_date: str = attr.ib(default=None)
     end_date: str = attr.ib(default=None)
