@@ -306,6 +306,8 @@ def brdf_pre_iter(data: xr.DataArray, params: Parameters):
     }
     values = []
     attrs = data.attrs.copy()
+    attrs['crs'] = f"epsg:{data.gw.crs_to_pyproj.to_epsg()}"
+    del attrs['geometries']
     grid_id = params.out_path.name if params.out_path is not None else '000000'
     io_tasks = {}
 
