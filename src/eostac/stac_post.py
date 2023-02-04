@@ -525,7 +525,13 @@ def landsat_brdf(
 
                 # Create a temporary directory to save files to
                 tmp_dir = tempfile.TemporaryDirectory()
-                meta = RT.get_landsat_coefficients(str(metadata))
+                try:
+                    meta = RT.get_landsat_coefficients(str(metadata))
+                    # FIXME: Log scene ids with corrupted metadata files for re-download
+                except Exception as e:
+                    logger.warning('Could not parse the coefficients for {}'.format(str(metadata)))
+                    continue
+ 
                 angle_coeff = row.ang
                 bandpass_applied = False
                 # Create an image reference for the angle files
