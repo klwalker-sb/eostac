@@ -29,6 +29,8 @@ from shapely.geometry import CAP_STYLE, JOIN_STYLE
 import attr
 from tqdm.auto import tqdm
 from joblib import delayed, parallel_backend
+import time
+from wrapt_timeout_decorator import timeout
 
 
 logger = set_color_logger(__name__)
@@ -270,7 +272,7 @@ def write_stack(
                 with open(error_file, mode='w') as f:
                     f.write(str(e))
 
-
+@timeout(600)
 def write_time_stack(
     data: xr.DataArray,
     out_path: Path,
