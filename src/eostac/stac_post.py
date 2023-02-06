@@ -371,7 +371,9 @@ def get_existing_filenames(filepath: Path) -> list:
     )
 
 
-def slice_and_mask(data: xr.DataArray, row) -> T.Tuple[xr.DataArray, xr.DataArray]:
+def slice_and_mask(
+    data: xr.DataArray, row: namedtuple
+) -> T.Tuple[xr.DataArray, xr.DataArray]:
     # Scale the data to [0,1]
     data_slice = (
         data.sel(time=row.date)
@@ -387,7 +389,9 @@ def slice_and_mask(data: xr.DataArray, row) -> T.Tuple[xr.DataArray, xr.DataArra
     # Get the data mask
     # clear = 1
     # no data = 0
-    data_mask = (~data_slice.isnull()).astype('uint8')
+    data_mask = (
+        ~data_slice.where(lambda x: x != NODATA).isnull()
+    ).astype('float64')
 
     return data_slice, data_mask
 
@@ -531,7 +535,7 @@ def landsat_brdf(
                 except Exception as e:
                     logger.warning('Could not parse the coefficients for {}'.format(str(metadata)))
                     continue
- 
+
                 angle_coeff = row.ang
                 bandpass_applied = False
                 # Create an image reference for the angle files
@@ -596,7 +600,9 @@ def landsat_brdf(
                             sr_brdf = dask.delayed(apply_bandpass)(sr_brdf, coeffs)
                             bandpass_applied = True
                 # Finalize the attributes
-                sr_brdf = dask.delayed(finalize_brdf)(sr_brdf, data_mask, attrs, data.gw.row_chunks)
+                sr_brdf = dask.delayed(finalize_brdf)(
+                    sr_brdf, data_mask, attrs, data.gw.row_chunks
+                )
                 if params.out_path is not None:
                     out_scene_path = get_collection_name(
                         params,
