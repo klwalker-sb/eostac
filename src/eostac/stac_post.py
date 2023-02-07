@@ -379,7 +379,6 @@ def slice_and_mask(
         data.sel(time=row.date)
         .drop_vars('time')
         .gw.set_nodata(
-            src_nodata=np.nan,
             dst_nodata=np.nan,
             out_range=(0, 1),
             dtype='float64',
