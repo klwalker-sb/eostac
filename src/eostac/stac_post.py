@@ -372,11 +372,11 @@ def get_existing_filenames(filepath: Path) -> list:
 
 
 def slice_and_mask(
-    data: xr.DataArray, row: namedtuple
+    data: xr.DataArray, row_idx: int
 ) -> T.Tuple[xr.DataArray, xr.DataArray]:
     # Scale the data to [0,1]
     data_slice = (
-        data.sel(time=row.date)
+        data.isel(indexers={'time': row_idx})
         .drop_vars('time')
         .gw.set_nodata(
             dst_nodata=np.nan,
@@ -482,6 +482,7 @@ def brdf_delayed_to_da(sr_brdf: Delayed, data: xr.DataArray) -> xr.DataArray:
 def landsat_brdf(
     data: xr.DataArray,
     scene_info: pd.DataFrame,
+    scene_dates: list,
     params: Parameters,
     data_obj: T.Optional[Data] = None
 ):
@@ -519,7 +520,7 @@ def landsat_brdf(
                     if scene_3a or scene_3b:
                         continue
                 # Scale the data to [0,1] and get the mask
-                data_slice, data_mask = slice_and_mask(data, row)
+                data_slice, data_mask = slice_and_mask(data, row_idx)
 
                 metadata, filename = get_metadata_and_filepath(row)
                 if not (filename.is_file() and metadata.is_file()):
@@ -673,6 +674,7 @@ def landsat_brdf(
 def sentinel2_brdf(
     data: xr.DataArray,
     scene_info: pd.DataFrame,
+    scene_dates: list,
     params: Parameters,
     data_obj: T.Optional[Data] = None
 ):
@@ -707,7 +709,7 @@ def sentinel2_brdf(
                 if scene_3a or scene_3b:
                     continue
             # Scale the data to [0,1] and get the mask
-            data_slice, data_mask = slice_and_mask(data, row)
+            data_slice, data_mask = slice_and_mask(data, row_idx)
 
             metadata, filename = get_metadata_and_filepath(row)
             if not (filename.is_file() and metadata.is_file()):
@@ -1183,24 +1185,26 @@ def load_data(args):
         if data_obj.sentinel2_files:
             with gw.open(
                 data_obj.sentinel2_files,
-                time_names=data_obj.sentinel2_dates,
-                band_names=[Sentinel2Bands(band).name for band in sentinel2_params.bands if band != Sentinel2Bands.scl.value]
+                band_names=[Sentinel2Bands(band).name for band in sentinel2_params.bands if band != Sentinel2Bands.scl.value],
+                nodata=NODATA
             ) as data_s2:
                 sentinel2_brdf(
                     data_s2,
-                    data_obj.sentinel2_df,
-                    params,
+                    scene_info=data_obj.sentinel2_df,
+                    scene_dates=data_obj.sentinel2_dates,
+                    params=params,
                     data_obj=data_obj
                 )
         if data_obj.landsat_files:
             with gw.open(
                 data_obj.landsat_files,
-                time_names=data_obj.landsat_dates,
-                band_names=[LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value]
+                band_names=[LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value],
+                nodata=NODATA
             ) as data_l:
                 landsat_brdf(
                     data_l,
-                    data_obj.landsat_df,
-                    params,
+                    scene_info=data_obj.landsat_df,
+                    scene_dates=data_obj.landsat_dates,
+                    params=params,
                     data_obj=data_obj
                 )
