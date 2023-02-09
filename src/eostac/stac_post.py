@@ -757,13 +757,6 @@ def sentinel2_brdf(
                 src_nodata=NODATA,
                 dst_nodata=NODATA
             )
-            out_scene_path = get_collection_name(
-                params,
-                sensor,
-                row,
-                True,
-                bandpass_applied
-            )
             # [0,10000]->[0,1]
             sr_brdf = dask.delayed(scale_data)(sr_brdf, data_mask)
             if params.apply_bandpass:
