@@ -247,6 +247,7 @@ def apply_bandpass(data: xr.DataArray, coeffs: dict) -> xr.DataArray:
     """Applies a band-pass calibration adjustment
     """
     attrs = data.attrs.copy()
+    data = data.where(lambda x: x != NODATA)
     # Create ndarrays of the coefficients
     alphas = np.array(
         [coeffs[band]['alpha'] for band in data.band.values], dtype='float64'
@@ -267,7 +268,11 @@ def apply_bandpass(data: xr.DataArray, coeffs: dict) -> xr.DataArray:
     )
 
     # Apply the linear bandpass adjustment
-    return (alphas + betas * data).assign_attrs(**attrs)
+    return (
+        (alphas + betas * data)
+        .fillna(NODATA)
+        .assign_attrs(**attrs)
+    )
 
 
 def finalize_brdf(
@@ -285,12 +290,11 @@ def finalize_brdf(
     attrs['data_range'] = '[0,10_000]'
     attrs['processing_level'] = 'SR,BRDF'
     attrs['data_type'] = 'uint16'
+    sr_brdf = sr_brdf.where(lambda x: (x != NODATA) & (data_mask == 1))
     data = (
-        xr.where(
-            data_mask == 1,
-            (sr_brdf*10_000).clip(0, 10_000).astype('uint16'),
-            NODATA
-        )
+        (sr_brdf * 10_000)
+        .fillna(NODATA)
+        .astype('uint16')
         .transpose('band', 'y', 'x')
         .assign_attrs(**attrs)
     )
@@ -584,7 +588,7 @@ def landsat_brdf(
                     dst_nodata=NODATA
                 )
                 # [0,10000]->[0,1]
-                sr_brdf = dask.delayed(scale_data)(sr_brdf)
+                sr_brdf = dask.delayed(scale_data)(sr_brdf, data_mask)
                 if params.apply_bandpass:
                     if data_obj is not None:
                         coeffs = None
@@ -753,8 +757,15 @@ def sentinel2_brdf(
                 src_nodata=NODATA,
                 dst_nodata=NODATA
             )
+            out_scene_path = get_collection_name(
+                params,
+                sensor,
+                row,
+                True,
+                bandpass_applied
+            )
             # [0,10000]->[0,1]
-            sr_brdf = dask.delayed(scale_data)(sr_brdf)
+            sr_brdf = dask.delayed(scale_data)(sr_brdf, data_mask)
             if params.apply_bandpass:
                 if data_obj is not None:
                     try:
@@ -838,15 +849,18 @@ def sentinel2_brdf(
         return values
 
 
-def scale_data(data: xr.DataArray, scale_factor: float = UP_SCALE):
+def scale_data(
+    data: xr.DataArray,
+    mask: xr.DataArray,
+    scale_factor: float = UP_SCALE
+) -> xr.DataArray:
     """Scales data to/from [0,10_000] and [0,1]
     """
-    return (
-        xr.where(
-            (data > 0) & (data < NODATA), data * scale_factor, NODATA
-        )
-        .astype('float64')
-    ).assign_attrs(**data.attrs)
+    attrs = data.attrs.copy()
+    data = data.where(lambda x: (x != NODATA) & (mask == 1))
+    data = (data * scale_factor).fillna(NODATA).astype('float64')
+
+    return data.assign_attrs(**attrs)
 
 
 def setup_paths(args) -> Data:
@@ -1195,16 +1209,16 @@ def load_data(args):
                     params=params,
                     data_obj=data_obj
                 )
-        if data_obj.landsat_files:
-            with gw.open(
-                data_obj.landsat_files,
-                band_names=[LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value],
-                nodata=NODATA
-            ) as data_l:
-                landsat_brdf(
-                    data_l,
-                    scene_info=data_obj.landsat_df,
-                    scene_dates=data_obj.landsat_dates,
-                    params=params,
-                    data_obj=data_obj
-                )
+        # if data_obj.landsat_files:
+        #     with gw.open(
+        #         data_obj.landsat_files,
+        #         band_names=[LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value],
+        #         nodata=NODATA
+        #     ) as data_l:
+        #         landsat_brdf(
+        #             data_l,
+        #             scene_info=data_obj.landsat_df,
+        #             scene_dates=data_obj.landsat_dates,
+        #             params=params,
+        #             data_obj=data_obj
+        #         )
