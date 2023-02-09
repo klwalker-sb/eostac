@@ -1202,16 +1202,16 @@ def load_data(args):
                     params=params,
                     data_obj=data_obj
                 )
-        # if data_obj.landsat_files:
-        #     with gw.open(
-        #         data_obj.landsat_files,
-        #         band_names=[LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value],
-        #         nodata=NODATA
-        #     ) as data_l:
-        #         landsat_brdf(
-        #             data_l,
-        #             scene_info=data_obj.landsat_df,
-        #             scene_dates=data_obj.landsat_dates,
-        #             params=params,
-        #             data_obj=data_obj
-        #         )
+        if data_obj.landsat_files:
+            with gw.open(
+                data_obj.landsat_files,
+                band_names=[LandsatBands(band).name for band in landsat_params.bands if band != LandsatBands.qa.value],
+                nodata=NODATA
+            ) as data_l:
+                landsat_brdf(
+                    data_l,
+                    scene_info=data_obj.landsat_df,
+                    scene_dates=data_obj.landsat_dates,
+                    params=params,
+                    data_obj=data_obj
+                )
