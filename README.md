@@ -75,7 +75,7 @@ eostac adjust \
     --out-path /pry_coefficients \
     --geometry /PRY_adm.zip \
     --n-samples 50 \
-    --resample 30.0 \
+    --resolution 30.0 \
     --freq Y \
     --freq-repeat 10 \
     --workers 4 \
