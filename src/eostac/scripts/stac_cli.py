@@ -94,6 +94,12 @@ def main():
                 help='Whether to only check and download errors (default: %(default)s)',
                 action='store_true'
             )
+            subparser.add_argument(
+                '--l7-stop_year', dest='l7_stop_year',
+                help='Year for which to stop downloading images from Landsat7 (default: %(default)s)',
+                type=int, default=2020
+            )
+
         elif process == Processes.brdf:
             subparser.add_argument(
                 '-p', '--project-path', dest='project_path', help='The input project path (default: %(default)s)'

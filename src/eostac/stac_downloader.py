@@ -57,6 +57,7 @@ class Parameters(object):
     tqdm_item_position: int = attr.ib(default=0)
     tqdm_extra_position: int = attr.ib(default=1)
     errors_only: bool = attr.ib(default=False)
+    l7_stop_year: int = attr.ib(default=2020)
 
     def __attrs_post_init__(self):
         # Open a file if passed as a path
@@ -213,7 +214,8 @@ def write_stack(
     data: xr.DataArray,
     out_path: Path,
     threads_per_worker: int,
-    tqdm_extra_position: int
+    tqdm_extra_position: int,
+    l7_stop_year: int
 ):
     """Writes a single time band stack to file
     """
@@ -225,52 +227,55 @@ def write_stack(
             out_name.unlink()
         error_file.unlink()
     if not out_name.is_file():
-        # Index by scene id because it is always unique
-        scene_idx = data.id.values.tolist().index(row_id)
-        try:
+        if row_id.split('_')[0][:4] == 'LE07' and int(row_id.split('_')[3][:4]) >= l7_stop_year:
+            #logger.info('ignoring image because it is L7 and past l7_stop_year')
+        else:
+            # Index by scene id because it is always unique
+            scene_idx = data.id.values.tolist().index(row_id)
             try:
-                (
-                    data
-                    .isel(time=scene_idx)
-                    .squeeze()
-                    .transpose('band', 'y', 'x')
-                    .gw.save(
-                        out_name,
-                        overwrite=True,
-                        compression='lzw',
-                        num_workers=threads_per_worker,
-                        log_progress=False,
-                        tqdm_kwargs={
-                            'position': tqdm_extra_position+2,
-                            'desc': 'Chunks'
-                        }
-                    )
-                )
-            except (RasterioIOError, RuntimeError, ValueError) as e:
-                raise DownloadError(e)
-            if out_name.is_file():
                 try:
-                    # Ensure the file is not corrupted
-                    with gw.open(out_name):
-                        pass
-                    # Successful open at this point
-                    # If there was previously an error file, remove it
+                    (
+                        data
+                        .isel(time=scene_idx)
+                        .squeeze()
+                        .transpose('band', 'y', 'x')
+                        .gw.save(
+                            out_name,
+                            overwrite=True,
+                            compression='lzw',
+                            num_workers=threads_per_worker,
+                            log_progress=False,
+                            tqdm_kwargs={
+                                'position': tqdm_extra_position+2,
+                                'desc': 'Chunks'
+                            }
+                        )
+                    )
+                except (RasterioIOError, RuntimeError, ValueError) as e:
+                    raise DownloadError(e)
+                if out_name.is_file():
+                    try:
+                        # Ensure the file is not corrupted
+                        with gw.open(out_name):
+                            pass
+                        # Successful open at this point
+                        # If there was previously an error file, remove it
+                        if error_file.is_file():
+                            error_file.unlink()
+                    except Exception as e:
+                        raise CorruptedError(f'The downloaded file is corrupted because of {e}.')
+                else:
+                    raise DownloadError('No file was created')
+
+            except (CorruptedError, DownloadError) as e:
+                if out_name.is_file():
+                    out_name.unlink()
+                if e.message.endswith('The image is empty.'):
                     if error_file.is_file():
                         error_file.unlink()
-                except Exception as e:
-                    raise CorruptedError(f'The downloaded file is corrupted because of {e}.')
-            else:
-                raise DownloadError('No file was created')
-
-        except (CorruptedError, DownloadError) as e:
-            if out_name.is_file():
-                out_name.unlink()
-            if e.message.endswith('The image is empty.'):
-                if error_file.is_file():
-                    error_file.unlink()
-            else:
-                with open(error_file, mode='w') as f:
-                    f.write(str(e))
+                else:
+                    with open(error_file, mode='w') as f:
+                        f.write(str(e))
 
 @timeout(600)
 def write_time_stack(
@@ -282,7 +287,8 @@ def write_time_stack(
     tqdm_extra_position: int,
     desc: str,
     chunks: int,
-    errors_only: bool
+    errors_only: bool,
+    l7_stop_year: int
 ) -> None:
     """Writes each DataArray time step to file
     """
@@ -321,7 +327,8 @@ def write_time_stack(
                 data,
                 out_path,
                 threads_per_worker,
-                tqdm_extra_position
+                tqdm_extra_position,
+                l7_stop_year
             )
 
     else:
@@ -331,7 +338,8 @@ def write_time_stack(
                 data,
                 out_path,
                 threads_per_worker,
-                tqdm_extra_position
+                tqdm_extra_position,
+                l7_stop_year
             ) for row in df.sort_values('date').itertuples()
         )
 
@@ -394,7 +402,8 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
             tqdm_extra_position=params.tqdm_extra_position,
             desc='Landsat scenes',
             chunks=params.chunksize,
-            errors_only=params.errors_only
+            errors_only=params.errors_only,
+            l7_stop_year=params.l7_stop_year
         )
 
         return int(data.epsg.values)
@@ -453,7 +462,8 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
             tqdm_extra_position=params.tqdm_extra_position,
             desc='Sentinel-2 scenes',
             chunks=params.chunksize,
-            errors_only=params.errors_only
+            errors_only=params.errors_only,
+            l7_stop_year=params.l7_stop_year
         )
 
 
@@ -475,7 +485,8 @@ def download_data(args):
         max_items=None if args.max_items == -1 else args.max_items,
         tqdm_item_position=args.tqdm_item_position,
         tqdm_extra_position=args.tqdm_extra_position,
-        errors_only=args.errors_only
+        errors_only=args.errors_only,
+        l7_stop_year=args.l7_stop_year
     )
     # Download Landsat
     landsat_params = LandsatParams(
