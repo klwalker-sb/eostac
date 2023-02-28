@@ -564,7 +564,9 @@ def landsat_brdf(
                         chunks=data.gw.row_chunks
                     )
                 except ValueError as e:
-                    raise ValueError(e)
+                    # FIXME: Log scene ids with corrupted angle files for re-download
+                    logger.warning('could not parse the angle file for {}'.format(str(metadata)))
+                    continue
 
                 if meta.sensor in ('l8', 'l9'):
                     rad_sensor = f'{meta.sensor}l7'

@@ -229,6 +229,7 @@ def write_stack(
     if not out_name.is_file():
         if row_id.split('_')[0][:4] == 'LE07' and int(row_id.split('_')[3][:4]) >= l7_stop_year:
             #logger.info('ignoring image because it is L7 and past l7_stop_year')
+            pass
         else:
             # Index by scene id because it is always unique
             scene_idx = data.id.values.tolist().index(row_id)
