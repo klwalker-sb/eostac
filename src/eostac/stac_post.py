@@ -370,7 +370,7 @@ def get_collection_names(
 def get_existing_filenames(filepath: Path) -> list:
     return list(
         filepath.parent.glob(
-            f"{'_'.join(filepath.stem.split('_')[:4])}*{filepath.name.split('_')[-1]}"
+            f"{'_'.join(filepath.stem.split('_')[:4])}*"
         )
     )
 
