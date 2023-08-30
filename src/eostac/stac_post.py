@@ -368,6 +368,7 @@ def get_collection_names(
 
 
 def get_existing_filenames(filepath: Path) -> list:
+
     return list(
         filepath.parent.glob(
             f"{'_'.join(filepath.stem.split('_')[:4])}*"
@@ -492,6 +493,7 @@ def landsat_brdf(
 ):
     """Calculates BRDF for Landsat
     """
+    err = None
     data = data.transpose('time', 'band', 'y', 'x')
     attrs = data.attrs.copy()
     attrs['crs'] = f"epsg:{data.gw.crs_to_pyproj.to_epsg()}"
@@ -529,86 +531,91 @@ def landsat_brdf(
                 metadata, filename = get_metadata_and_filepath(row)
                 if not (filename.is_file() and metadata.is_file()):
                     logger.warning('Both the image and metadata files must exist.')
-                    continue
+                    err = 'missing metadata file'
 
                 # Create a temporary directory to save files to
                 tmp_dir = tempfile.TemporaryDirectory()
                 try:
                     meta = RT.get_landsat_coefficients(str(metadata))
-                    # FIXME: Log scene ids with corrupted metadata files for re-download
                 except Exception as e:
                     logger.warning('Could not parse the coefficients for {}'.format(str(metadata)))
-                    continue
-
-                angle_coeff = row.ang
-                bandpass_applied = False
-                # Create an image reference for the angle files
-                ref_image, ref_info = create_image_reference(
-                    filename,
-                    Path(tmp_dir.name).absolute(),
-                    data.gw.row_chunks
-                )
-                # Create the angle files
-                try:
-                    angle_data = landsat_pixel_angles(
-                        str(Path(angle_coeff).absolute()),
-                        ref_image,
-                        tmp_dir.name,
-                        meta.sensor,
-                        l57_angles_path=str(angle_paths.l57_angles_path),
-                        l8_angles_path=str(angle_paths.l8_angles_path),
-                        subsample=params.subsample,
-                        resampling=params.resampling,
-                        num_workers=1,
-                        verbose=0,
-                        chunks=data.gw.row_chunks
+                    err = 'corrupt metadata file'
+                if err is None:
+                    angle_coeff = row.ang
+                    bandpass_applied = False
+                    # Create an image reference for the angle files
+                    ref_image, ref_info = create_image_reference(
+                        filename,
+                        Path(tmp_dir.name).absolute(),
+                        data.gw.row_chunks
                     )
-                except ValueError as e:
-                    # FIXME: Log scene ids with corrupted angle files for re-download
-                    logger.warning('could not parse the angle file for {}'.format(str(metadata)))
-                    continue
+                    # Create the angle files
+                    try:
+                        angle_data = landsat_pixel_angles(
+                            str(Path(angle_coeff).absolute()),
+                            ref_image,
+                            tmp_dir.name,
+                            meta.sensor,
+                            l57_angles_path=str(angle_paths.l57_angles_path),
+                            l8_angles_path=str(angle_paths.l8_angles_path),
+                            subsample=params.subsample,
+                            resampling=params.resampling,
+                            num_workers=1,
+                            verbose=0,
+                            chunks=data.gw.row_chunks
+                        )
+                    except ValueError as e:
+                        logger.warning('could not parse the angle file for {}'.format(str(metadata)))
+                        err = 'corrupt angle file'
 
-                if meta.sensor in ('l8', 'l9'):
-                    rad_sensor = f'{meta.sensor}l7'
-                else:
-                    rad_sensor = meta.sensor
+                if err is not None:
+                    out_name = None
+                    brdf_created = False
+                    bandpass_applied = False
+                    sensor_name = 'l'
+                else:    
+                    if meta.sensor in ('l8', 'l9'):
+                        rad_sensor = f'{meta.sensor}l7'
+                    else:
+                        rad_sensor = meta.sensor
 
-                # BRDF normalization
-                sr_brdf = dask.delayed(BR.norm_brdf)(
-                    data_slice,
-                    solar_za=angle_data.sza,
-                    solar_az=angle_data.saa,
-                    sensor_za=angle_data.vza,
-                    sensor_az=angle_data.vaa,
-                    sensor=rad_sensor,
-                    wavelengths=data.band.values.tolist(),
-                    # Return data as [0,10000].
-                    out_range=DOWN_SCALE,
-                    # The data are already scaled [0,1].
-                    scale_factor=1.0,
-                    src_nodata=NODATA,
-                    dst_nodata=NODATA
-                )
-                # [0,10000]->[0,1]
-                sr_brdf = dask.delayed(scale_data)(sr_brdf, data_mask)
-                if params.apply_bandpass:
-                    if data_obj is not None:
-                        coeffs = None
-                        if meta.sensor.lower() in ['l5', 'l7']:
-                            try:
-                                coeffs = dask.delayed(load_dict)(
-                                    str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.json')
-                                )
-                            except FileNotFoundError:
-                                coeffs = None
+                    # BRDF normalization
+                    sr_brdf = dask.delayed(BR.norm_brdf)(
+                        data_slice,
+                        solar_za=angle_data.sza,
+                        solar_az=angle_data.saa,
+                        sensor_za=angle_data.vza,
+                        sensor_az=angle_data.vaa,
+                        sensor=rad_sensor,
+                        wavelengths=data.band.values.tolist(),
+                        # Return data as [0,10000].
+                        out_range=DOWN_SCALE,
+                        # The data are already scaled [0,1].
+                        scale_factor=1.0,
+                        src_nodata=NODATA,
+                        dst_nodata=NODATA
+                    )
+                    # [0,10000]->[0,1]
+                    sr_brdf = dask.delayed(scale_data)(sr_brdf, data_mask)
+                    if params.apply_bandpass:
+                        if data_obj is not None:
+                            coeffs = None
+                            if meta.sensor.lower() in ['l5', 'l7']:
+                                try:
+                                    coeffs = dask.delayed(load_dict)(
+                                        str(data_obj.l7_to_l8_coeffs_path).replace('.npz', '.json')
+                                    )
+                                except FileNotFoundError:
+                                    coeffs = None
 
-                        if coeffs is not None:
-                            sr_brdf = dask.delayed(apply_bandpass)(sr_brdf, coeffs)
-                            bandpass_applied = True
+                            if coeffs is not None:
+                                sr_brdf = dask.delayed(apply_bandpass)(sr_brdf, coeffs)
+                                bandpass_applied = True
                 # Finalize the attributes
                 sr_brdf = dask.delayed(finalize_brdf)(
                     sr_brdf, data_mask, attrs, data.gw.row_chunks
                 )
+                brdf_created = True
                 if params.out_path is not None:
                     out_scene_path = get_collection_name(
                         params,
@@ -632,34 +639,38 @@ def landsat_brdf(
                     # io_tasks[tmp_dir] = rio_store
                     io_tasks[tmp_dir] = (ds, out_scene_path)
 
-                    # Save the scene info
-                    scene_info_path = params.out_path / 'scene.info'
-                    df = pd.DataFrame(
-                        data=[[
-                            row.id,
-                            out_scene_path.name,
-                            row.date,
-                            GWSensorNameLookup[meta.sensor].value.value,
-                            True,
-                            bandpass_applied
-                        ]],
-                        columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
-                    )
-                    df = pickle_scene_info(df, date_pos=3, scene_info=scene_info_path)[0]
-
-                    if (row_idx > 0) and (row_idx % params.pool_size == 0):
-                        if io_tasks:
-                            compute_dask_brdf(
-                                params,
-                                io_tasks,
-                                'Landsat BRDF',
-                                position=3,
-                                return_data=params.return_data,
-                                encoding=encoding
-                            )
-                            io_tasks = {}
-                else:
-                    io_tasks[tmp_dir] = brdf_delayed_to_da(sr_brdf, data)
+                # Save the scene info
+                scene_info_path = params.out_path / 'scene.info'
+                out_name = out_scene_path.name
+                sensor_name = GWSensorNameLookup[meta.sensor].value.value
+                df = pd.DataFrame(
+                    data=[[
+                        row.id,
+                        out_name,
+                        row.date,
+                        sensor_name,
+                        brdf_created,
+                        bandpass_applied,
+                        err
+                    ]],
+                    columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass','error']
+                )
+                df = pickle_scene_info(df, date_pos=3, scene_info=scene_info_path)[0]
+                if err is None:
+                    if params.out_path is not None:
+                        if (row_idx > 0) and (row_idx % params.pool_size == 0):
+                            if io_tasks:
+                                compute_dask_brdf(
+                                    params,
+                                    io_tasks,
+                                    'Landsat BRDF',
+                                    position=3,
+                                    return_data=params.return_data,
+                                    encoding=encoding
+                                )
+                                io_tasks = {}
+                    else:
+                        io_tasks[tmp_dir] = brdf_delayed_to_da(sr_brdf, data)
 
             if io_tasks:
                 result = compute_dask_brdf(
@@ -686,6 +697,7 @@ def sentinel2_brdf(
 ):
     """Calculates BRDF for Sentinel-2
     """
+    err = None
     data = data.transpose('time', 'band', 'y', 'x')
     attrs = data.attrs.copy()
     attrs['crs'] = f"epsg:{data.gw.crs_to_pyproj.to_epsg()}"
@@ -769,6 +781,7 @@ def sentinel2_brdf(
                         )
                     except FileNotFoundError:
                         coeffs = None
+                        err = 'coeffs not found'
 
                     if coeffs is not None:
                         sr_brdf = dask.delayed(apply_bandpass)(sr_brdf, coeffs)
@@ -806,9 +819,10 @@ def sentinel2_brdf(
                         row.date,
                         GWSensorNameLookup[s2_sensor].value.value,
                         True,
-                        bandpass_applied
+                        bandpass_applied,
+                        err
                     ]],
-                    columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass']
+                    columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass','error']
                 )
                 df = pickle_scene_info(df, date_pos=2, scene_info=scene_info_path)[0]
 
@@ -1217,3 +1231,15 @@ def load_data(args):
                     params=params,
                     data_obj=data_obj
                 )
+
+    processing_df = pd.read_pickle(Path(params.out_path.parent/'processing.info'))
+    brdf_df = pd.read_pickle(Path(params.out_path /'scene.info'))
+    brdf_df.set_index('id',drop=True,inplace=True)
+    brdf_df.rename(columns={'out_id':'brdf_id','error':'brdf_error'},inplace=True)
+    if 'brdf' not in processing_df:
+        processing_df['brdf_id'] = np.nan
+        processing_df['brdf_error'] = np.nan
+        processing_df['brdf'] = np.nan
+        processing_df['bandpass'] = np.nan
+    processing_df.fillna(brdf_df, inplace=True)
+    pd.to_pickle(processing_df, Path(params.out_path.parent/'processing.info'))

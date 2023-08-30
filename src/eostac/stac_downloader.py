@@ -31,7 +31,9 @@ from tqdm.auto import tqdm
 from joblib import delayed, parallel_backend
 import time
 from wrapt_timeout_decorator import timeout
-
+from datetime import datetime
+import os
+import dask
 
 logger = set_color_logger(__name__)
 
@@ -208,7 +210,6 @@ def s2_l2a_clouds(data: xr.DataArray) -> xr.DataArray:
 #         stack_dims=('y', 'x', 'time'), direction='stack'
 #     ).fit_transform(data_cloudless)
 
-
 def write_stack(
     row_id: str,
     data: xr.DataArray,
@@ -218,7 +219,10 @@ def write_stack(
     l7_stop_year: int
 ):
     """Writes a single time band stack to file
+        returns a dictionary entry to log in processing database if image not
+        already in database
     """
+    processing_db = pd.read_pickle(Path(out_path.parent/'processing.info'))
     out_name = out_path / f"{row_id}.tif"
     error_file = out_path.parent.parent / 'errors' / f'{Path(out_name).parent.parent.name}_{Path(out_name).stem}_ERROR.txt'
     error_file.parent.mkdir(parents=True, exist_ok=True)
@@ -226,21 +230,37 @@ def write_stack(
         if out_name.is_file():
             out_name.unlink()
         error_file.unlink()
-    if not out_name.is_file():
+    # only download images that don't already exist in directory/database:
+    process_this = True
+    if row_id in processing_db.index:
+        if processing_db.at[row_id,'redownload'] == True:
+            logger.info(f'reprocessing {row_id}')
+            #pass
+        else:
+            process_this = False
+    if process_this == True:
         if row_id.split('_')[0][:4] == 'LE07' and int(row_id.split('_')[3][:4]) >= l7_stop_year:
+            new_dict_entry={row_id:{'dl':'None','skip':True,'redownload':False,'skip_reason':'L7 after l7_stop_year'}}
             #logger.info('ignoring image because it is L7 and past l7_stop_year')
-            pass
         else:
             # Index by scene id because it is always unique
             scene_idx = data.id.values.tolist().index(row_id)
             try:
                 try:
-                    (
-                        data
-                        .isel(time=scene_idx)
-                        .squeeze()
-                        .transpose('band', 'y', 'x')
-                        .gw.save(
+                    img = (
+                            data
+                            .isel(time=scene_idx)
+                            .squeeze()
+                            .transpose('band', 'y','x')
+                    )
+                    aband = (img.sel(band='blue')
+                             .squeeze()
+                             .where(lambda x:(x!=img.nodatavals[0]) & (x > 0))
+                             .astype('uint8')
+                    )
+                    valid_pix = dask.array.count_nonzero(aband).compute(num_workers=4)
+
+                    img.gw.save(
                             out_name,
                             overwrite=True,
                             compression='lzw',
@@ -251,7 +271,6 @@ def write_stack(
                                 'desc': 'Chunks'
                             }
                         )
-                    )
                 except (RasterioIOError, RuntimeError, ValueError) as e:
                     raise DownloadError(e)
                 if out_name.is_file():
@@ -265,8 +284,19 @@ def write_stack(
                             error_file.unlink()
                     except Exception as e:
                         raise CorruptedError(f'The downloaded file is corrupted because of {e}.')
+                        new_dict_entry = {row_id:{'dl':'None','redownload':True,'error':'download corrupted','dldate':datetime.today().strftime('%Y-%m-%d')}}
                 else:
                     raise DownloadError('No file was created')
+                    new_dict_entry={row_id:{'dl':'None','redownload':True,'error':'download failed','dldate':datetime.today().strftime('%Y-%m-%d')}}
+
+                new_dict_entry={row_id:
+                                {'dl':out_name,
+                                 'beforeDB':False,
+                                 'redownload':False,
+                                 'skip':False,
+                                 'dldate':datetime.today().strftime('%Y-%m-%d'),
+                                 'numpix':valid_pix}
+                                }
 
             except (CorruptedError, DownloadError) as e:
                 if out_name.is_file():
@@ -274,9 +304,16 @@ def write_stack(
                 if e.message.endswith('The image is empty.'):
                     if error_file.is_file():
                         error_file.unlink()
+                    new_dict_entry={row_id:{'dl':'None','skip':True,'redownload':False,'skip_reason':'image is empty','dldate':datetime.today().strftime('%Y-%m-%d')}}
                 else:
                     with open(error_file, mode='w') as f:
                         f.write(str(e))
+                    new_dict_entry={row_id:{'dl':'None','redownload':True,'error':'download failed','dldate':datetime.today().strftime('%Y-%m-%d')}}
+        #logger.info('adding entry to new download dict: {}'.format(new_dict_entry))
+
+    else:
+        new_dict_entry = {}
+    return new_dict_entry
 
 @timeout(600)
 def write_time_stack(
@@ -323,7 +360,7 @@ def write_time_stack(
             position=tqdm_extra_position,
             desc=desc
         ):
-            write_stack(
+            pdic = write_stack(
                 row.id,
                 data,
                 out_path,
@@ -344,21 +381,28 @@ def write_time_stack(
             ) for row in df.sort_values('date').itertuples()
         )
 
-        with parallel_backend(
-            backend='loky',
-            n_jobs=n_workers
-        ):
-            with TqdmParallel(
-                tqdm_kwargs={
-                    'total': len(df.index),
-                    'desc': desc
-                }
-            ) as pool:
-                __ = pool(
-                    delayed(write_stack)(*args) for args in data_gen
-                )
+        try:
+            with parallel_backend(
+                backend='loky',
+                n_jobs=n_workers
+            ):
+                with TqdmParallel(
+                    tqdm_kwargs={
+                        'total': len(df.index),
+                        'desc': desc
+                    }
+                ) as pool:
+                    results = pool(delayed(write_stack)(*args) for args in data_gen)
+                    #__ = pool(
+                    #    delayed(write_stack)(*args) for args in data_gen
+                    #)
 
+        except (CorruptedError, DownloadError) as e:
+            logger.warning(e)
+            pass
 
+    return results
+        
 def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
     """Downloads Landsat data
     """
@@ -384,7 +428,7 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
         tqdm_extra_position=params.tqdm_extra_position
     )
     if data is None:
-        return NODOWNLOAD
+        return 0,[]
     else:
         data = data.assign_coords(band=[LandsatBands(band).name for band in data.band.values])
         data = data.assign_attrs(scene_ids=df.id.values.tolist())
@@ -394,7 +438,7 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
         df, df_download = pickle_scene_info(df, date_pos=3, scene_info=scene_info)
 
         # Write each date to file
-        write_time_stack(
+        ld = write_time_stack(
             data,
             landsat_params.out_path,
             n_workers=params.n_workers,
@@ -407,7 +451,7 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
             l7_stop_year=params.l7_stop_year
         )
 
-        return int(data.epsg.values)
+        return int(data.epsg.values), ld
 
 
 def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
@@ -434,7 +478,9 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
         tqdm_item_position=params.tqdm_item_position,
         tqdm_extra_position=params.tqdm_extra_position
     )
-    if data is not None:
+    if data is None:
+        return []
+    else:
         s2_bands = [Sentinel2Bands(band).name for band in data.band.values]
         data = data.assign_coords(band=s2_bands)
         data = data.assign_attrs(scene_ids=df.id.values.tolist())
@@ -454,7 +500,7 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
         df, df_download = pickle_scene_info(df, date_pos=2, scene_info=scene_info)
 
         # Write each date to file
-        write_time_stack(
+        sd = write_time_stack(
             data,
             sentinel2_params.out_path,
             n_workers=params.n_workers,
@@ -466,6 +512,8 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
             errors_only=params.errors_only,
             l7_stop_year=params.l7_stop_year
         )
+
+        return sd
 
 
 def download_data(args):
@@ -489,19 +537,75 @@ def download_data(args):
         errors_only=args.errors_only,
         l7_stop_year=args.l7_stop_year
     )
+
+    processing_info_path = params.out_path/ 'processing.info'
+    if processing_info_path.is_file():
+        processing_dict = pd.read_pickle(processing_info_path).to_dict(orient='index')
+
+    else:
+        processing_dict = {}
+        if os.path.exists(params.out_path/'landsat'):
+            landsat_files = [fi for fi in os.listdir(params.out_path/'landsat') if fi.endswith('.tif')]
+            if len(landsat_files) > 0:
+                for f in landsat_files:
+                    processing_dict[os.path.splitext(f)[0]]={
+                        'dl':params.out_path/'landsat/{}'.format(f),
+                        'beforeDB':True,
+                        'redownload':False,
+                        'skip':False
+                        }
+        if os.path.exists(params.out_path/'sentinel2'):
+            sentinel2_files = [fi for fi in os.listdir(params.out_path/'sentinel2') if fi.endswith('.tif')]
+            if len(sentinel2_files) > 0:
+                for s in sentinel2_files:
+                    processing_dict[os.path.splitext(s)[0]]={
+                        'dl':params.out_path/'sentinel2/{}'.format(s),
+                        'beforeDB':True,
+                        'redownload':False,
+                        'skip':False}
+        # Write new processing database
+        if not os.path.exists(params.out_path):
+            os.makedirs(params.out_path)
+        new_processing_info = pd.DataFrame.from_dict(processing_dict,orient='index')
+        new_processing_info.rename_axis('id', axis=1, inplace=True)
+        pd.to_pickle(new_processing_info, processing_info_path)
+        
+    logger.info(f'\n {len(processing_dict)} images already downloaded (or looked at and skipped) \n')
+
     # Download Landsat
     landsat_params = LandsatParams(
         out_path=SensorPaths(out_path=params.out_path).landsat,
         epsg=params.epsg,
         resolution=params.resolution
     )
-    epsg = download_landsat(params, landsat_params)
+    landsatdl = download_landsat(params, landsat_params)
 
-    if epsg != NODOWNLOAD:
-        # Download Sentinel-2
-        sentinel2_params = Sentinel2Params(
-            out_path=SensorPaths(out_path=params.out_path).sentinel2,
-            epsg=epsg,
-            resolution=params.resolution
-        )
-        download_sentinel2(params, sentinel2_params)
+    if landsatdl[0] == 0:
+        logger.warning('There are no Landsat images for this period')
+        num_new_landsat = 0
+
+    else:    
+        num_new_landsat= sum(1 for e in landsatdl[1] if e)
+        if num_new_landsat > 0:
+            if len(processing_dict) ==  0:
+                processing_dict = next((e for e in landsatdl[1] if e),{})
+            for d in filter(None,landsatdl[1]):
+                processing_dict.update(d)
+                
+    # Download Sentinel-2
+    sentinel2_params = Sentinel2Params(
+        out_path=SensorPaths(out_path=params.out_path).sentinel2,
+        epsg=params.epsg,
+        resolution=params.resolution
+    )
+    sentdl = download_sentinel2(params, sentinel2_params)
+    num_new_sentinel = sum(1 for e in sentdl if e)
+    if num_new_sentinel > 0:
+        for d in filter(None,sentdl):
+            processing_dict.update(d)
+
+    if(num_new_landsat + num_new_sentinel)>0:
+        new_processing_info = pd.DataFrame.from_dict(processing_dict,orient='index')
+        new_processing_info.rename_axis('id', axis=1, inplace=True)
+        pd.to_pickle(new_processing_info, processing_info_path)
+    logger.info(f'{num_new_landsat} Landsat images and {num_new_sentinel} Sentinel-2 images downloaded and added to database.')
