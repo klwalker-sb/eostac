@@ -50,8 +50,17 @@ LANDSAT_LIKE_BAND_NAMES = [
     LandsatBands('swir22').name
 ]
 
-
 class Sentinel2Bands(enum.Enum):
+    coastal = 'coastal'
+    blue = 'blue'
+    green = 'green'
+    red = 'red'
+    nir = 'nir'
+    swir1 = 'swir16'
+    swir2 = 'swir22'
+    scl = 'scl'
+    
+class Sentinel2Bands_v0(enum.Enum):
     coastal = 'B01'
     blue = 'B02'
     green = 'B03'

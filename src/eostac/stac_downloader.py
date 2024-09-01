@@ -110,7 +110,7 @@ class LandsatParams(SensorParams):
         LandsatBands.qa.value
     ])
     collection: str = attr.ib(default='landsat_c2_l2')
-    stac_catalog: str = attr.ib(default='microsoft')
+    stac_catalog: str = attr.ib(default='microsoft_v1')
     mask_data: bool = attr.ib(default=True)
     epsg: T.Union[int, None] = attr.ib(default=None)
     resolution: T.Union[float, int] = attr.ib(default=10.0)
@@ -136,12 +136,12 @@ class Sentinel2Params(SensorParams):
         Sentinel2Bands.scl.value
     ])
     collection: str = attr.ib(default='sentinel_s2_l2a')
-    stac_catalog: str = attr.ib(default='element84')
+    stac_catalog: str = attr.ib(default='element84_v1')
     mask_data: bool = attr.ib(default=False)
     epsg: T.Union[int, None] = attr.ib(default=None)
     resolution: T.Union[float, int] = attr.ib(default=10.0)
     resampling: Resampling = attr.ib(default=Resampling.cubic)
-    extra_assets: T.List[str] = attr.ib(default=['metadata'])
+    extra_assets: T.List[str] = attr.ib(default=['granule_metadata'])
     out_path: Path = attr.ib(default='.')
 
     def __attrs_post_init__(self):
@@ -185,7 +185,7 @@ def s2_l2a_clouds(data: xr.DataArray) -> xr.DataArray:
         ]
     }
 
-    return data.sel(band=Sentinel2Bands('SCL').name).gw.replace(replace)
+    return data.sel(band=Sentinel2Bands('scl').name).gw.replace(replace)
 
 
 # def s2_l1c_clouds(data: xr.DataArray):
@@ -423,9 +423,7 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
         resampling=landsat_params.resampling,
         extra_assets=landsat_params.extra_assets,
         out_path=landsat_params.out_path,
-        max_items=params.max_items,
-        tqdm_item_position=params.tqdm_item_position,
-        tqdm_extra_position=params.tqdm_extra_position
+        max_items=params.max_items
     )
     if data is None:
         return 0,[]
@@ -474,9 +472,7 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
         resampling=sentinel2_params.resampling,
         extra_assets=sentinel2_params.extra_assets,
         out_path=sentinel2_params.out_path,
-        max_items=params.max_items,
-        tqdm_item_position=params.tqdm_item_position,
-        tqdm_extra_position=params.tqdm_extra_position
+        max_items=params.max_items
     )
     if data is None:
         return []
@@ -491,7 +487,7 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
             (
                 xr.where(data_s2_cloud_mask == NODATA, NODATA, data)
             )
-            .sel(band=[band for band in s2_bands if band != Sentinel2Bands('SCL').name])
+            .sel(band=[band for band in s2_bands if band != Sentinel2Bands('scl').name])
             .assign_attrs(**data.attrs)
         )
 
@@ -532,8 +528,6 @@ def download_data(args):
         threads_per_worker=args.threads,
         view_asset_keys=args.view_asset_keys,
         max_items=None if args.max_items == -1 else args.max_items,
-        tqdm_item_position=args.tqdm_item_position,
-        tqdm_extra_position=args.tqdm_extra_position,
         errors_only=args.errors_only,
         l7_stop_year=args.l7_stop_year
     )
