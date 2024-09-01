@@ -744,51 +744,64 @@ def sentinel2_brdf(
                 data.gw.row_chunks
             )[0]
             # Create the angle files
-            angle_data = sentinel_pixel_angles(
-                str(Path(metadata).absolute()),
-                ref_image,
-                nodata=-32768,
-                num_workers=1,
-                resample_res=100.0,
-                chunksize=(
-                    max(data.gw.row_chunks, 256),
-                    max(data.gw.col_chunks, 256)
+            try:
+                angle_data = sentinel_pixel_angles(
+                    str(Path(metadata).absolute()),
+                    ref_image,
+                    nodata=-32768,
+                    num_workers=1,
+                    resample_res=100.0,
+                    chunksize=(
+                        max(data.gw.row_chunks, 256),
+                        max(data.gw.col_chunks, 256)
+                    )
                 )
-            )
-            # Sentinel-2 Landsat-like
-            s2_sensor = get_sentinel_sensor(metadata)
-            rad_sensor = s2_sensor + 'l7'
-            # BRDF normalization
-            sr_brdf = dask.delayed(BR.norm_brdf)(
-                data_slice,
-                angle_data.sza,
-                angle_data.saa,
-                angle_data.vza,
-                angle_data.vaa,
-                sensor=rad_sensor,
-                wavelengths=data.band.values.tolist(),
-                out_range=DOWN_SCALE,
-                src_nodata=NODATA,
-                dst_nodata=NODATA
-            )
-            # [0,10000]->[0,1]
-            sr_brdf = dask.delayed(scale_data)(sr_brdf, data_mask)
-            if params.apply_bandpass:
-                if data_obj is not None:
-                    try:
-                        coeffs = dask.delayed(load_dict)(
-                            str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.json')
-                        )
-                    except FileNotFoundError:
-                        coeffs = None
-                        err = 'coeffs not found'
+            except IndexError:
+                err = 'angle data file is missing data'
+            if err is not None:
+                out_name = None
+                brdf_created = False
+                bandpass_applied = False
+                sensor_name = 's'
+            else:
+                out_name = out_scene_path.name
+                sensor_name = GWSensorNameLookup[meta.sensor].value.value
 
-                    if coeffs is not None:
-                        sr_brdf = dask.delayed(apply_bandpass)(sr_brdf, coeffs)
-                        bandpass_applied = True
-            # Finalize the attributes
-            sr_brdf = dask.delayed(finalize_brdf)(sr_brdf, data_mask, attrs, data.gw.row_chunks)
-            if params.out_path is not None:
+                # Sentinel-2 Landsat-like
+                s2_sensor = get_sentinel_sensor(metadata)
+                rad_sensor = s2_sensor + 'l7'
+                # BRDF normalization
+                sr_brdf = dask.delayed(BR.norm_brdf)(
+                    data_slice,
+                    angle_data.sza,
+                    angle_data.saa,
+                    angle_data.vza,
+                    angle_data.vaa,
+                    sensor=rad_sensor,
+                    wavelengths=data.band.values.tolist(),
+                    out_range=DOWN_SCALE,
+                    src_nodata=NODATA,
+                    dst_nodata=NODATA
+                )
+                # [0,10000]->[0,1]
+                sr_brdf = dask.delayed(scale_data)(sr_brdf, data_mask)
+                if params.apply_bandpass:
+                    if data_obj is not None:
+                        try:
+                            coeffs = dask.delayed(load_dict)(
+                                str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.json')
+                            )
+                        except FileNotFoundError:
+                            coeffs = None
+                            err = 'coeffs not found'
+
+                        if coeffs is not None:
+                            sr_brdf = dask.delayed(apply_bandpass)(sr_brdf, coeffs)
+                            bandpass_applied = True
+                            brdf_created = True
+            
+                # Finalize the attributes
+                sr_brdf = dask.delayed(finalize_brdf)(sr_brdf, data_mask, attrs, data.gw.row_chunks)
                 out_scene_path = get_collection_name(
                     params,
                     sensor,
@@ -810,49 +823,51 @@ def sentinel2_brdf(
                 # io_tasks[tmp_dir] = rio_store
                 io_tasks[tmp_dir] = (ds, out_scene_path)
 
-                # Save the scene info
-                scene_info_path = params.out_path / 'scene.info'
-                df = pd.DataFrame(
-                    data=[[
-                        row.id,
-                        out_scene_path.name,
-                        row.date,
-                        GWSensorNameLookup[s2_sensor].value.value,
-                        True,
-                        bandpass_applied,
-                        err
-                    ]],
-                    columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass','error']
-                )
-                df = pickle_scene_info(df, date_pos=2, scene_info=scene_info_path)[0]
-
-                if (row_idx > 0) and (row_idx % params.pool_size == 0):
-                    if io_tasks:
-                        compute_dask_brdf(
-                            params,
-                            io_tasks,
-                            'Sentinel-2 BRDF',
-                            position=1,
-                            return_data=params.return_data,
-                            encoding=encoding
-                        )
-                        io_tasks = {}
-            else:
-                io_tasks[tmp_dir] = brdf_delayed_to_da(sr_brdf, data)
-
-        if io_tasks:
-            result = compute_dask_brdf(
-                params,
-                io_tasks,
-                'Sentinel-2 BRDF',
-                position=1,
-                return_data=params.return_data,
-                encoding=encoding
+            # Save the scene info
+            scene_info_path = params.out_path / 'scene.info'
+            df = pd.DataFrame(
+                data=[[
+                    row.id,
+                    out_name,
+                    row.date,
+                    sensor_name,
+                    brdf_created,
+                    bandpass_applied,
+                    err
+                ]],
+                columns=['id', 'out_id', 'date', 'sensor', 'brdf', 'bandpass','error']
             )
-            values.append(result)
-        cleanup_tmp(params, io_tasks)
-        # except Exception:
-        #     cleanup_tmp(params, io_tasks)
+            df = pickle_scene_info(df, date_pos=2, scene_info=scene_info_path)[0]
+
+            if err is None:
+                if params.out_path is not None:
+                    if (row_idx > 0) and (row_idx % params.pool_size == 0):
+                        if io_tasks:
+                            compute_dask_brdf(
+                                params,
+                                io_tasks,
+                                'Sentinel-2 BRDF',
+                                position=1,
+                                return_data=params.return_data,
+                                encoding=encoding
+                            )
+                            io_tasks = {}
+                else:
+                    io_tasks[tmp_dir] = brdf_delayed_to_da(sr_brdf, data)
+
+                if io_tasks:
+                    result = compute_dask_brdf(
+                        params,
+                        io_tasks,
+                        'Sentinel-2 BRDF',
+                        position=1,
+                        return_data=params.return_data,
+                        encoding=encoding
+                        )
+                    values.append(result)
+                cleanup_tmp(params, io_tasks)
+                # except Exception:
+                #     cleanup_tmp(params, io_tasks)
 
     if params.return_data:
         return values
