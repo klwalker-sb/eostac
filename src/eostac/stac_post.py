@@ -762,11 +762,8 @@ def sentinel2_brdf(
                 out_name = None
                 brdf_created = False
                 bandpass_applied = False
-                sensor_name = 's'
+                sensor_name = GWSensorNameLookup[s2_sensor].value.value
             else:
-                out_name = out_scene_path.name
-                sensor_name = GWSensorNameLookup[meta.sensor].value.value
-
                 # Sentinel-2 Landsat-like
                 s2_sensor = get_sentinel_sensor(metadata)
                 rad_sensor = s2_sensor + 'l7'
@@ -809,6 +806,8 @@ def sentinel2_brdf(
                     True,
                     bandpass_applied
                 )
+                out_name = out_scene_path.name
+                sensor_name = GWSensorNameLookup[s2_sensor].value.value
                 ds = (
                     brdf_delayed_to_da(sr_brdf, data)
                     .to_dataset(dim='band')
@@ -855,19 +854,19 @@ def sentinel2_brdf(
                 else:
                     io_tasks[tmp_dir] = brdf_delayed_to_da(sr_brdf, data)
 
-                if io_tasks:
-                    result = compute_dask_brdf(
-                        params,
-                        io_tasks,
-                        'Sentinel-2 BRDF',
-                        position=1,
-                        return_data=params.return_data,
-                        encoding=encoding
-                        )
-                    values.append(result)
-                cleanup_tmp(params, io_tasks)
-                # except Exception:
-                #     cleanup_tmp(params, io_tasks)
+        if io_tasks:
+            result = compute_dask_brdf(
+                params,
+                io_tasks,
+                'Sentinel-2 BRDF',
+                position=1,
+                return_data=params.return_data,
+                encoding=encoding
+                )
+            values.append(result)
+        cleanup_tmp(params, io_tasks)
+        # except Exception:
+        #     cleanup_tmp(params, io_tasks)
 
     if params.return_data:
         return values
