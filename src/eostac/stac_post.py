@@ -611,6 +611,8 @@ def landsat_brdf(
                             if coeffs is not None:
                                 sr_brdf = dask.delayed(apply_bandpass)(sr_brdf, coeffs)
                                 bandpass_applied = True
+                    else:
+                        bandpass_applied = False            
                 # Finalize the attributes
                 sr_brdf = dask.delayed(finalize_brdf)(
                     sr_brdf, data_mask, attrs, data.gw.row_chunks
@@ -796,7 +798,10 @@ def sentinel2_brdf(
                             sr_brdf = dask.delayed(apply_bandpass)(sr_brdf, coeffs)
                             bandpass_applied = True
                             brdf_created = True
-            
+                else:
+                    bandpass_applied = False
+                    brdf_created = True
+                    
                 # Finalize the attributes
                 sr_brdf = dask.delayed(finalize_brdf)(sr_brdf, data_mask, attrs, data.gw.row_chunks)
                 out_scene_path = get_collection_name(
