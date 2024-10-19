@@ -338,8 +338,11 @@ def get_collection_name(
         scene_date = row_id_parts[3]
     else:
         # Sentinel
-        grid_id = row_id_parts[1]
-        scene_date = row_id_parts[2]
+        if row_id_parts[1].startswith('MSI'):
+            grid_id = row_id_parts[4][1:]
+        else:
+            grid_id = row_id_parts[1]
+        scene_date = row_id_parts[2][:7]
     level_id = ''.join(row.id.split('_')[-2:])
     uid = path_id + grid_id + level_id
 
@@ -946,7 +949,14 @@ def setup_paths(args) -> Data:
         exist_mask = [Path(sentinel2_path / f"{row.id}.tif").is_file() for row in sentinel2_df.itertuples()]
         if not all(exist_mask):
             sentinel2_df = sentinel2_df[exist_mask]
-        meta = [str(sentinel2_path / Path(row.metadata).name) for row in sentinel2_df.itertuples()]
+        if 'granule_metadata' in sentinel2_df.columns:     
+            if 'metadata' in sentinel2_df.columns:
+                sentinel2_df['granule_metadata'].fillna(sentinel2_df['metadata'],inplace=True)
+            if 'granule-metadata' in sentinel2_df.columns:
+                sentinel2_df['granule_metadata'].fillna(sentinel2_df['granule-metadata'],inplace=True)
+            meta = [str(sentinel2_path / Path(row.granule_metadata).name) for row in sentinel2_df.itertuples()]
+        else:
+            meta = [str(sentinel2_path / Path(row.metadata).name) for row in sentinel2_df.itertuples()]
         sentinel2_df = sentinel2_df.assign(**{
             'metadata': meta
         })
