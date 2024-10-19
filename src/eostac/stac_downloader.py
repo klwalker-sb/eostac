@@ -7,6 +7,7 @@ from .errors import CorruptedError, DownloadError
 from .stac_utils import (
     LandsatBands,
     Sentinel2Bands,
+    Sentinel2Bands_v0,
     SensorPaths,
     pickle_scene_info,
     rechunk,
@@ -60,6 +61,7 @@ class Parameters(object):
     tqdm_extra_position: int = attr.ib(default=1)
     errors_only: bool = attr.ib(default=False)
     l7_stop_year: int = attr.ib(default=2020)
+    stac_cat: str = attr.ib(default=None)
 
     def __attrs_post_init__(self):
         # Open a file if passed as a path
@@ -185,7 +187,7 @@ def s2_l2a_clouds(data: xr.DataArray) -> xr.DataArray:
         ]
     }
 
-    return data.sel(band=Sentinel2Bands('scl').name).gw.replace(replace)
+    return data.sel(band='scl').gw.replace(replace)
 
 
 # def s2_l1c_clouds(data: xr.DataArray):
@@ -487,7 +489,7 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
             (
                 xr.where(data_s2_cloud_mask == NODATA, NODATA, data)
             )
-            .sel(band=[band for band in s2_bands if band != Sentinel2Bands('scl').name])
+            .sel(band=[band for band in s2_bands if band != 'scl'])
             .assign_attrs(**data.attrs)
         )
 
@@ -587,10 +589,43 @@ def download_data(args):
                 processing_dict.update(d)
                 
     # Download Sentinel-2
+
+    if params.stac_cat in ['microsoft_v1', 'element84_v0']:
+        bands =[
+        Sentinel2Bands_v0.blue.value,
+        Sentinel2Bands_v0.green.value,
+        Sentinel2Bands_v0.red.value,
+        Sentinel2Bands_v0.nir.value,
+        Sentinel2Bands_v0.swir1.value,
+        Sentinel2Bands_v0.swir2.value,
+        Sentinel2Bands_v0.scl.value
+        ]
+        if params.stac_cat == 'microsoft_v1':
+            extra_assets = ['granule-metadata']
+            stac_catalog = 'microsoft_v1'
+        else:
+            extra_assets = ['metadata']
+            stac_catalog = 'element84_v0'
+    else:
+        stac_catalog == 'element84_v1'
+        extra_assets = ['granule_metadata']
+        bands =[
+        Sentinel2Bands.blue.value,
+        Sentinel2Bands.green.value,
+        Sentinel2Bands.red.value,
+        Sentinel2Bands.nir.value,
+        Sentinel2Bands.swir1.value,
+        Sentinel2Bands.swir2.value,
+        Sentinel2Bands.scl.value
+        ]
+        
     sentinel2_params = Sentinel2Params(
         out_path=SensorPaths(out_path=params.out_path).sentinel2,
         epsg=params.epsg,
-        resolution=params.resolution
+        resolution=params.resolution,
+        stac_catalog=stac_catalog,
+        extra_assets=extra_assets,
+        bands=bands
     )
     sentdl = download_sentinel2(params, sentinel2_params)
     num_new_sentinel = sum(1 for e in sentdl if e)
