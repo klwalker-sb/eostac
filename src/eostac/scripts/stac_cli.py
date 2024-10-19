@@ -109,6 +109,10 @@ def main():
                     help='Year for which to stop downloading images from Landsat7 (default: %(default)s)',
                     type=int, default=2020
                 )
+                subparser.add_argument(
+                    '--stac-cat', dest='stac_cat',
+                    help='stac catalog to download from if not default (element84_v1 for sentinel2, microsoft_v1 for landsat). Alternatives: element84_v0, microsoft_v1 (for early sentinel2)'
+                )
                 
             elif process == Processes.brdf:
                 subparser.add_argument(
