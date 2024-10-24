@@ -340,9 +340,11 @@ def get_collection_name(
         # Sentinel
         if row_id_parts[1].startswith('MSI'):
             grid_id = row_id_parts[4][1:]
+            scene_date = row_id_parts[2][:7]
+            # TODO: convert from DOY to MMDD
         else:
             grid_id = row_id_parts[1]
-        scene_date = row_id_parts[2][:7]
+            scene_date = row_id_parts[2]
     level_id = ''.join(row.id.split('_')[-2:])
     uid = path_id + grid_id + level_id
 
@@ -763,6 +765,10 @@ def sentinel2_brdf(
                 )
             except IndexError:
                 err = 'angle data file is missing data'
+            except Exception as e:
+                logger.warning(f'{e}')
+                err = 'other error parsing angle data file'
+                
             if err is not None:
                 out_name = None
                 brdf_created = False
