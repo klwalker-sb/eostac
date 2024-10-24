@@ -498,7 +498,6 @@ def landsat_brdf(
 ):
     """Calculates BRDF for Landsat
     """
-    err = None
     data = data.transpose('time', 'band', 'y', 'x')
     attrs = data.attrs.copy()
     attrs['crs'] = f"epsg:{data.gw.crs_to_pyproj.to_epsg()}"
@@ -521,6 +520,7 @@ def landsat_brdf(
                     position=2
                 )
             ):
+                err = None
                 sensor = get_sensor_name(row)
                 if params.out_path is not None:
                     out_scene_path_l3a, out_scene_path_l3b = get_collection_names(
@@ -704,7 +704,6 @@ def sentinel2_brdf(
 ):
     """Calculates BRDF for Sentinel-2
     """
-    err = None
     data = data.transpose('time', 'band', 'y', 'x')
     attrs = data.attrs.copy()
     attrs['crs'] = f"epsg:{data.gw.crs_to_pyproj.to_epsg()}"
@@ -724,6 +723,7 @@ def sentinel2_brdf(
                 position=0
             )
         ):
+            err = None
             sensor = get_sensor_name(row)
             if params.out_path is not None:
                 out_scene_path_l3a, out_scene_path_l3b = get_collection_names(
