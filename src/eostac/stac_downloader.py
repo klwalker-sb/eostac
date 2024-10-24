@@ -607,7 +607,7 @@ def download_data(args):
             extra_assets = ['metadata']
             stac_catalog = 'element84_v0'
     else:
-        stac_catalog == 'element84_v1'
+        stac_catalog = 'element84_v1'
         extra_assets = ['granule_metadata']
         bands =[
         Sentinel2Bands.blue.value,
