@@ -24,6 +24,7 @@ from .stac_utils import (
     UP_SCALE,
     LandsatBands,
     Sentinel2Bands,
+    Sentinel2Bands_v0,
     read_df,
     pickle_scene_info,
     assign_crs,
@@ -155,6 +156,7 @@ class Parameters(object):
     resampling: str = attr.ib(default='bilinear')
     apply_bandpass: bool = attr.ib(default=False)
     coeffs_path: T.Union[str, Path, None] = attr.ib(default=None)
+    coeffs_prefix: str = attr.ib(default='pry_')
     return_data: bool = attr.ib(default=False)
     n_workers: int = attr.ib(default=1, converter=int)
     threads_per_worker: int = attr.ib(default=1, converter=int)
@@ -318,10 +320,8 @@ def brdf_pre_iter(data: xr.DataArray, params: Parameters):
 
     return open_kwargs, values, attrs, grid_id, io_tasks
 
-
 def get_sensor_name(row) -> str:
     return row.id.split('_')[0]
-
 
 def get_collection_name(
     params: Parameters,
@@ -462,7 +462,8 @@ def compute_dask_brdf(
 
     cleanup_tmp(params, io_tasks)
     if return_data:
-        return results[0][0].data.compute(num_workers=params.n_workers)
+        #return results[0][0].data.compute(num_workers=params.n_workers)
+        return results[0][0][0].to_array().data   # the above gives a tuple
     else:
         return None
 
@@ -563,6 +564,7 @@ def landsat_brdf(
                             meta.sensor,
                             l57_angles_path=str(angle_paths.l57_angles_path),
                             l8_angles_path=str(angle_paths.l8_angles_path),
+                            #l9_angles_path=str(angle_paths.l9_angles_path),
                             subsample=params.subsample,
                             resampling=params.resampling,
                             num_workers=1,
@@ -773,7 +775,7 @@ def sentinel2_brdf(
                 out_name = None
                 brdf_created = False
                 bandpass_applied = False
-                sensor_name = GWSensorNameLookup[s2_sensor].value.value
+                sensor_name = 's2'
             else:
                 # Sentinel-2 Landsat-like
                 s2_sensor = get_sentinel_sensor(metadata)
@@ -904,13 +906,13 @@ def setup_paths(args) -> Data:
     sensor_lookup = {
         SensorNames.landsat5.value: 'l5_to_l8_coeffs_path',
         SensorNames.landsat7.value: 'l7_to_l8_coeffs_path',
+        SensorNames.landsat9.value: 'l9_to_l8_coeffs_path',
         SensorNames.sentinel2.value: 's2_to_l8_coeffs_path'
     }
-
-    if args.coeffs_path is None:
-        project_parent = Path(args.project_path).absolute().parent
+    if args.coeffs_path:
+        cf_path = Path(args.coeffs_path).absolute()
     else:
-        project_parent = Path(args.coeffs_path).absolute()
+        cf_path = Path(args.project_path).absolute().parent
 
     l5_to_l8_coeffs_path = (
         SensorPaths(project_parent).out_path / f'{args.coeffs_prefix}{SensorPaths(project_parent).l5_to_l8_coefficients.name}'
@@ -924,9 +926,12 @@ def setup_paths(args) -> Data:
     s2_to_l8_coeffs_path = (
         SensorPaths(project_parent).out_path / f'{args.coeffs_prefix}{SensorPaths(project_parent).s2_to_l8_coefficients.name}'
     )
-
-    landsat_path = SensorPaths(args.project_path).landsat
-    sentinel2_path = SensorPaths(args.project_path).sentinel2
+    if args.project_path is None:
+        landsat_path = SensorPaths(args.out_path).landsat
+        sentinel2_path = SensorPaths(args.out_path).sentinel2
+    else:
+        landsat_path = SensorPaths(args.project_path).landsat
+        sentinel2_path = SensorPaths(args.project_path).sentinel2
     landsat_scene_info = landsat_path / 'scene.info'
     sentinel2_scene_info = sentinel2_path / 'scene.info'
     time_slice = slice(args.start_date, args.end_date)
@@ -1020,6 +1025,7 @@ def load_data(args):
         out_path=data_obj.sentinel2_path
     )
 
+    # This whole part is just for generating new coefficients (called from stac_adjust)
     if args.get_coeffs:
         if data_obj.landsat_df.empty:
             data_obj.landsat_df = pd.DataFrame([], columns=['id', 'metadata', 'ang', 'date', 'sensor'])
@@ -1071,8 +1077,9 @@ def load_data(args):
         if not df.empty:
             for date in df.date_str.unique():
                 df_pair = df.query(f"date_str == '{date}'")
-                if (SensorNames.landsat8.value in df_pair.sensor.values) \
-                        or (SensorNames.landsat9.value in df_pair.sensor.values):
+                if (((SensorNames.landsat8.value in df_pair.sensor.values) 
+                        or (SensorNames.landsat9.value in df_pair.sensor.values))
+                        and len(set(df_pair.sensor.values)) > 1):
                     date_pairs.append(df_pair)
 
         if date_pairs:
@@ -1088,6 +1095,25 @@ def load_data(args):
 
                 return xy_dict
 
+            def split_duplicate_dates(imgs, dates):
+                '''
+                images on the same dates are combined in gw_open (as max, min or mean). To analyze each image separately,
+                need to split them into two lists and process each separately. This function takes a list of
+                images and corresponding list of dates as its inputs and optputs two lists of images and dates.
+                '''
+                dates1 = []
+                images1 = []
+                dates2 = []
+                images2 = []
+                for idx, item in enumerate(dates):
+                    if item not in dates1:
+                        dates1.append(item)
+                        images1.append(imgs[idx])
+                    else:
+                        dates2.append(item)
+                        images2.append(imgs[idx])
+                return images1, dates1, images2, dates2
+                
             for df_pair in date_pairs:
                 xy_dict = {
                     'X': {
@@ -1108,9 +1134,21 @@ def load_data(args):
 
                 if SensorNames.sentinel2.value in df_pair.sensor.values:
                     sensor_name = SensorNames.sentinel2
+                    
+                    #df_pair_match = df_pair.query(f"sensor == '{sensor_name.value}'")
+                    #img = [f'{sentinel2_params.out_path}/{i}.tif' for i in df_pair_match['id'].to_list()] 
+                    #dt = df_pair.query(f"sensor == '{sensor_name.value}'")['date_str'].to_list()
+                    #if len(img) > 1:
+                    #    img, dt, img2, dt2 = split_duplicate_dates(img, dt)
+                    #    ##TODO: do something with the 2nd
+                    #    print(f'split duplicate. Second image = {img2} /n date: {dt2}')
+                    #print(f' first image = {img} /n dates1: {dt}' )
+                    
                     with gw.open(
                         data_obj.sentinel2_files,
+                        #img,
                         time_names=data_obj.sentinel2_dates,
+                        #time_names=dt,
                         band_names=[
                             Sentinel2Bands(band).name for band in sentinel2_params.bands
                             if band != Sentinel2Bands.scl.value
@@ -1174,8 +1212,18 @@ def load_data(args):
                         ]
                     ) as data_l:
                         xy_dict = apply_landsat_brdf(data_l, df_pair, sensor_name, lin_var='y')
-
+                        '''
+                        ## or if comparing Landsat 8 to Landsat 9 (but then need to modify XY dict definition above)
+                        xy_dict = apply_landsat_brdf(data_l, df_pair, sensor_name)
+                        xy_dict['coeffs_path'][sensor_name.value] = getattr(
+                            data_obj, data_obj.sensor_lookup[
+                                df_pair.query(f"sensor == '{sensor_name.value}'").sensor.values[0]
+                            ]
+                        )
+                        '''
                 if max([len(y) for y in xy_dict['y'].values()]) == 0:
+                    continue
+                if max([len(x) for x in xy_dict['X'].values()]) == 0:
                     continue
 
                 y = None
@@ -1238,7 +1286,8 @@ def load_data(args):
                     out_fig=str(data_obj.s2_to_l8_coeffs_path).replace('.npz', '.png')
                 )
                 save_dict(data_obj.s2_to_l8_coeffs_path, coeffs)
-
+    
+    ## This part is for applying brdf using existing coefficients
     else:
         if data_obj.sentinel2_files:
             with gw.open(
@@ -1249,7 +1298,7 @@ def load_data(args):
                 sentinel2_brdf(
                     data_s2,
                     scene_info=data_obj.sentinel2_df,
-                    scene_dates=data_obj.sentinel2_dates,
+                    #scene_dates=data_obj.sentinel2_dates,
                     params=params,
                     data_obj=data_obj
                 )
@@ -1262,7 +1311,7 @@ def load_data(args):
                 landsat_brdf(
                     data_l,
                     scene_info=data_obj.landsat_df,
-                    scene_dates=data_obj.landsat_dates,
+                    #scene_dates=data_obj.landsat_dates,
                     params=params,
                     data_obj=data_obj
                 )
@@ -1278,3 +1327,4 @@ def load_data(args):
         processing_df['bandpass'] = np.nan
     processing_df.fillna(brdf_df, inplace=True)
     pd.to_pickle(processing_df, Path(params.out_path.parent/'processing.info'))
+
