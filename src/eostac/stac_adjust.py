@@ -24,31 +24,36 @@ def create_polygon(x: float, y: float, dist: float) -> Polygon:
 
 
 def adjust_data(args):
-    df_region = gpd.read_file(args.geometry)
+    ## uses existing points if file already exists, otherwise takes a random sample.
+    if not Path.exists(Path(f'{args.out_path}/points.gpkg')):
+        df_region = gpd.read_file(args.geometry)
 
-    # Get random x,y coordinates
-    x_min, y_min, x_max, y_max = df_region.total_bounds
-    rng = np.random.default_rng(100)
-    x = rng.uniform(x_min, x_max, 50_000)
-    y = rng.uniform(y_min, y_max, 50_000)
-    # Convert them to a points GeoSeries
-    points = gpd.GeoSeries(gpd.points_from_xy(x, y, crs=df_region.crs))
-    # Clips the points to the geometry of interest
-    points = points[points.within(df_region.unary_union)]
-    # Get a spatially balanced sample
-    qt = QuadTree(points)
-    qt.split_recursive(max_samples=10)
-    df = gpd.GeoDataFrame(
-        qt.sample(
-            n=args.n_samples, random_state=100
-        ),
-        columns=['geometry'],
-        crs=points.crs
-    )
-    df = df.to_crs('epsg:4326')
-    df = df.assign(**{UniqueIdentifers.unique_id.value: range(len(df.index))})
-    # Create polygon bounding boxes around the points
-    df = df.assign(geometry=[create_polygon(geom.x, geom.y, args.dist) for geom in df.geometry])
+        # Get random x,y coordinates
+        x_min, y_min, x_max, y_max = df_region.total_bounds
+        rng = np.random.default_rng(100)
+        x = rng.uniform(x_min, x_max, 50_000)
+        y = rng.uniform(y_min, y_max, 50_000)
+        # Convert them to a points GeoSeries
+        points = gpd.GeoSeries(gpd.points_from_xy(x, y, crs=df_region.crs))
+        # Clips the points to the geometry of interest
+        points = points[points.within(df_region.unary_union)]
+        # Get a spatially balanced sample
+        qt = QuadTree(points)
+        qt.split_recursive(max_samples=10)
+        df = gpd.GeoDataFrame(
+            qt.sample(
+                n=args.n_samples, random_state=100
+            ),
+            columns=['geometry'],
+            crs=points.crs
+        )
+        df = df.to_crs('epsg:4326')
+        df = df.assign(**{UniqueIdentifers.unique_id.value: range(len(df.index))})
+        # Create polygon bounding boxes around the points
+        df = df.assign(geometry=[create_polygon(geom.x, geom.y, args.dist) for geom in df.geometry])
+    else:
+        df = gpd.read_file(Path(f'{args.out_path}/points.gpkg'))
+        
     if args.freq is None:
         dates = [(args.start_date, args.end_date)]
     else:
@@ -60,9 +65,10 @@ def adjust_data(args):
             for i in range(0, args.freq_repeat)
         ]
 
+    ## if --regress flag not included, just downloads data for sample points
     if not args.regress:
         with tempfile.TemporaryDirectory() as tmp:
-            points_file = Path(tmp) / 'points.gpkg'
+            points_file = Path(f'{args.out_path}/'points.gpkg'
             df.to_file(points_file)
             for row in tqdm(df.itertuples(), total=len(df.index), position=0, desc='Sample'):
                 id_path = str(Path(args.out_path) / f"{getattr(row, UniqueIdentifers.unique_id.value):06d}")
@@ -90,14 +96,19 @@ def adjust_data(args):
 
                     subprocess.call(com, shell=True)
     else:
+        ## gets brdf coefficients by running brdf on all image pairs with matching dates
+        df = gpd.read_file(f'{args.out_path}/points.gpkg')
         for row in tqdm(df.itertuples(), total=len(df.index), position=0, desc='Sample'):
             id_path = str(Path(args.out_path) / f"{row.unique_id:06d}")
             com = "eostac brdf " \
                   f"--start-date {args.start_date} " \
                   f"--end-date {args.end_date} " \
-                  f"--project-path {id_path} " \
+                  f"--out-path {id_path} " \
+                  f"--coeffs-prefix {args.coeffs_prefix} " \
+                  f"--coeffs-path {args.coeffs_path} " \
                   f"--workers {args.workers} " \
                   f"--threads {args.threads} " \
                   "--get-coeffs"
 
             subprocess.call(com, shell=True)
+
