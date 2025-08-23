@@ -190,7 +190,14 @@ def main():
                     help='Whether to only check and download errors (default: %(default)s)',
                     action='store_true'
                 )
-                
+                subparser.add_argument(
+                    '--coeffs-path', dest='coeffs_path',
+                    help='The path where coefficient files are stored (default: %(default)s)',
+                )   
+                subparser.add_argument(
+                    '--coeffs-prefix', dest='coeffs_prefix', default='pry_',
+                    help='The coefficient prefix (default: %(default)s)',
+                )
             elif process == Processes.smooth:
                 subparser.add_argument(
                     '-p', '--project-path', dest='project_path', help='The input project path (default: %(default)s)'
@@ -237,4 +244,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
