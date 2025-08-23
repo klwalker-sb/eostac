@@ -166,7 +166,7 @@ def get_lin_coefficients(
 
     if show_plot:
         plt.show()
-
+    plt.close()
     return coeffs
 
 
@@ -712,3 +712,4 @@ def smooth(
         return yraw.unstack(), ysmooth.unstack()
     else:
         return ysmooth
+
