@@ -231,6 +231,7 @@ class SensorPathsEnum(enum.Enum):
     s2_to_l8_coefficients = 'coefficients_s2_to_l8.npz'
     landsat = 'landsat'
     sentinel2 = 'sentinel2'
+    dem = 'terrain'
 
 
 @attr.s
@@ -274,6 +275,12 @@ class SensorPaths(object):
 
         return s2path
 
+    @property
+    def dem(self) -> Path:
+        dempath = (Path(self.out_path) / SensorPathsEnum.dem.value).absolute()
+        self.mkdir(dempath)
+
+        return dempath
 
 def read_df(scene_info: Path) -> pd.DataFrame:
     """Reads the scene info DataFrame

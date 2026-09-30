@@ -878,7 +878,7 @@ def sentinel2_brdf(
                 position=1,
                 return_data=params.return_data,
                 encoding=encoding
-                )
+            )
             values.append(result)
         cleanup_tmp(params, io_tasks)
         # except Exception:
@@ -903,6 +903,7 @@ def scale_data(
 
 
 def setup_paths(args) -> Data:
+    #import ipdb;ipdb.set_trace() 
     sensor_lookup = {
         SensorNames.landsat5.value: 'l5_to_l8_coeffs_path',
         SensorNames.landsat7.value: 'l7_to_l8_coeffs_path',
@@ -915,16 +916,16 @@ def setup_paths(args) -> Data:
         cf_path = Path(args.project_path).absolute().parent
 
     l5_to_l8_coeffs_path = (
-        SensorPaths(project_parent).out_path / f'{args.coeffs_prefix}{SensorPaths(project_parent).l5_to_l8_coefficients.name}'
+        cf_path / f'{args.coeffs_prefix}{SensorPaths(cf_path).l5_to_l8_coefficients.name}'
     )
     l7_to_l8_coeffs_path = (
-        SensorPaths(project_parent).out_path / f'{args.coeffs_prefix}{SensorPaths(project_parent).l7_to_l8_coefficients.name}'
+        cf_path / f'{args.coeffs_prefix}{SensorPaths(cf_path).l7_to_l8_coefficients.name}'
     )
     l9_to_l8_coeffs_path = (
-        SensorPaths(project_parent).out_path / f'{args.coeffs_prefix}{SensorPaths(project_parent).l9_to_l8_coefficients.name}'
+        cf_path / f'{args.coeffs_prefix}{SensorPaths(cf_path).l9_to_l8_coefficients.name}'
     )
     s2_to_l8_coeffs_path = (
-        SensorPaths(project_parent).out_path / f'{args.coeffs_prefix}{SensorPaths(project_parent).s2_to_l8_coefficients.name}'
+        cf_path / f'{args.coeffs_prefix}{SensorPaths(cf_path).s2_to_l8_coefficients.name}'
     )
     if args.project_path is None:
         landsat_path = SensorPaths(args.out_path).landsat
@@ -1012,6 +1013,7 @@ def load_data(args):
         out_path=args.out_path,
         apply_bandpass=args.apply_bandpass,
         coeffs_path=args.coeffs_path,
+        coeffs_prefix=args.coeffs_prefix,
         return_data=True if args.get_coeffs else False,
         n_workers=args.workers,
         threads_per_worker=args.threads,
@@ -1298,7 +1300,7 @@ def load_data(args):
                 sentinel2_brdf(
                     data_s2,
                     scene_info=data_obj.sentinel2_df,
-                    #scene_dates=data_obj.sentinel2_dates,
+                    scene_dates=data_obj.sentinel2_dates,
                     params=params,
                     data_obj=data_obj
                 )
@@ -1311,20 +1313,20 @@ def load_data(args):
                 landsat_brdf(
                     data_l,
                     scene_info=data_obj.landsat_df,
-                    #scene_dates=data_obj.landsat_dates,
+                    scene_dates=data_obj.landsat_dates,
                     params=params,
                     data_obj=data_obj
                 )
 
-    processing_df = pd.read_pickle(Path(params.out_path.parent/'processing.info'))
-    brdf_df = pd.read_pickle(Path(params.out_path /'scene.info'))
-    brdf_df.set_index('id',drop=True,inplace=True)
-    brdf_df.rename(columns={'out_id':'brdf_id','error':'brdf_error'},inplace=True)
-    if 'brdf' not in processing_df:
-        processing_df['brdf_id'] = np.nan
-        processing_df['brdf_error'] = np.nan
-        processing_df['brdf'] = np.nan
-        processing_df['bandpass'] = np.nan
-    processing_df.fillna(brdf_df, inplace=True)
-    pd.to_pickle(processing_df, Path(params.out_path.parent/'processing.info'))
+        processing_df = pd.read_pickle(Path(params.out_path.parent/'processing.info'))
+        brdf_df = pd.read_pickle(Path(params.out_path /'scene.info'))
+        brdf_df.set_index('id',drop=True,inplace=True)
+        brdf_df.rename(columns={'out_id':'brdf_id','error':'brdf_error'},inplace=True)
+        if 'brdf' not in processing_df:
+            processing_df['brdf_id'] = np.nan
+            processing_df['brdf_error'] = np.nan
+            processing_df['brdf'] = np.nan
+            processing_df['bandpass'] = np.nan
+        processing_df.fillna(brdf_df, inplace=True)
+        pd.to_pickle(processing_df, Path(params.out_path.parent/'processing.info'))
 

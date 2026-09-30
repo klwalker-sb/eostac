@@ -2,6 +2,8 @@ from pathlib import Path
 import enum
 import typing as T
 from abc import ABC
+import rasterio as rio
+import xml.etree.ElementTree as ET
 
 from .errors import CorruptedError, DownloadError
 from .stac_utils import (
@@ -38,6 +40,18 @@ import dask
 
 logger = set_color_logger(__name__)
 
+import geowombat.core.stac as _gwstac
+
+_original_download_worker = _gwstac._download_worker
+
+def _safe_download_worker(item, extra, out_path):
+    try:
+        return _original_download_worker(item, extra, out_path)
+    except Exception as e:
+        logger.warning(f"Skipping metadata asset '{extra}' for {item.id}: {e}")
+        return {'id': item.id, extra: None}
+
+_gwstac._download_worker = _safe_download_worker
 
 @attr.s
 class Parameters(object):
@@ -60,6 +74,8 @@ class Parameters(object):
     tqdm_item_position: int = attr.ib(default=0)
     tqdm_extra_position: int = attr.ib(default=1)
     errors_only: bool = attr.ib(default=False)
+    metadata_only: bool = attr.ib(default=False)
+    sensors: str = attr.ib(default='LS2')
     l7_stop_year: int = attr.ib(default=2020)
     stac_cat: str = attr.ib(default=None)
 
@@ -149,6 +165,25 @@ class Sentinel2Params(SensorParams):
     def __attrs_post_init__(self):
         self.out_path.mkdir(parents=True, exist_ok=True)
 
+@attr.s
+class DEMParams(SensorParams):
+    """Copernicus DEM GLO-30 parameters
+    """
+    bands: T.List[str] = attr.ib(default=['data'])
+    collection: str = attr.ib(default='cop_dem_glo_30')
+    stac_catalog: str = attr.ib(default='element84_v1')
+    mask_data: bool = attr.ib(default=False)
+    epsg: T.Union[int, None] = attr.ib(default=None)
+    resolution: T.Union[float, int] = attr.ib(default=10.0)
+    resampling: Resampling = attr.ib(default=Resampling.bilinear)
+    extra_assets: T.List[str] = attr.ib(default=None)
+    out_path: Path = attr.ib(default='.')
+    start_date: str = attr.ib(default='2000-01-01')
+    end_date: str = attr.ib(default='2030-01-01')
+
+    def __attrs_post_init__(self):
+        self.out_path.mkdir(parents=True, exist_ok=True)
+
 
 class S2SceneClassificationLegend(enum.Enum):
     """Sentinel-2 Scene Classification Layer legend
@@ -166,8 +201,8 @@ class S2SceneClassificationLegend(enum.Enum):
     snow_ice = 11
 
 
-S2CLOUDLESS_BAND_NAMES = ['coastal', 'blue', 'red', 'nir1', 'nir', 'rededge', 'water', 'cirrus', 'swir1', 'swir2']
-S2CLOUDLESS_BANDS = [getattr(Sentinel2Bands, band).value for band in S2CLOUDLESS_BAND_NAMES]
+#S2CLOUDLESS_BAND_NAMES = ['coastal', 'blue', 'red', 'nir1', 'nir', 'rededge', 'water', 'cirrus', 'swir1', 'swir2']
+#S2CLOUDLESS_BANDS = [getattr(Sentinel2Bands, band).value for band in S2CLOUDLESS_BAND_NAMES]
 S2_VIS_BAND_NAMES = ['blue', 'green', 'red']
 S2_VIS_BANDS = [getattr(Sentinel2Bands, band).value for band in S2_VIS_BAND_NAMES]
 
@@ -211,6 +246,80 @@ def s2_l2a_clouds(data: xr.DataArray) -> xr.DataArray:
 #     X = Stackerizer(
 #         stack_dims=('y', 'x', 'time'), direction='stack'
 #     ).fit_transform(data_cloudless)
+
+
+def get_landsat_sun_angles(mtl_xml_path: T.Union[str, Path]) -> T.Tuple[float, float]:
+    """Returns (sun_zenith, sun_azimuth) in degrees from a Landsat Collection 2 MTL.xml file.
+    """
+    tree = ET.parse(mtl_xml_path)
+    root = tree.getroot()
+    # Search anywhere in the tree rather than assuming exact nesting,
+    # since group structure can vary slightly across sensor generations.
+    azimuth = float(root.find('.//SUN_AZIMUTH').text)
+    elevation = float(root.find('.//SUN_ELEVATION').text)
+    zenith = 90.0 - elevation
+    return zenith, azimuth
+
+def get_sentinel2_sun_angles(mtd_tl_path: T.Union[str, Path]) -> T.Tuple[float, float]:
+    """Returns (sun_zenith, sun_azimuth) in degrees from a Sentinel-2 MTD_TL.xml (granule metadata) file.
+        Note, this is the global scene value. Sentinel-2 MTD_TL.xml does have a Sun_Angles_Grid item, 
+        with more precise values (roughly a 23×23 grid at ~5 km spacing) if slight variation (up to 0.5deg) matters
+    """
+    tree = ET.parse(mtd_tl_path)
+    root = tree.getroot()
+    zenith = float(root.find('.//Mean_Sun_Angle/ZENITH_ANGLE').text)
+    azimuth = float(root.find('.//Mean_Sun_Angle/AZIMUTH_ANGLE').text)
+    return zenith, azimuth
+
+def extract_sun_angles(
+    processing_info_path: Path,
+    scene_info_path: Path,
+    sensor: str,
+    metadata_col: str,
+) -> pd.DataFrame:
+    """Parses sun zenith/azimuth from each scene's metadata file (referenced in scene_info) and writes 
+    them into processing_info, keyed by scene id.
+    """
+    processing_info = pd.read_pickle(processing_info_path)
+    scene_info = pd.read_pickle(scene_info_path)
+
+    for col in ('sun_zenith', 'sun_azimuth'):
+        if col not in processing_info.columns:
+            processing_info[col] = pd.NA
+
+    parser = get_sentinel2_sun_angles if sensor == 'S2' else get_landsat_sun_angles
+
+    n_ok, n_missing, n_failed = 0, 0, 0
+    for _, row in scene_info.iterrows():
+        scene_id = row['id']
+        meta_path = row[metadata_col]
+
+        if scene_id not in processing_info.index:
+            logger.warning(f"{scene_id} not in processing.info; skipping")
+            n_missing += 1
+            continue
+        if pd.isna(meta_path) or not Path(meta_path).is_file():
+            logger.warning(f"Metadata file missing on disk for {scene_id}; skipping")
+            n_missing += 1
+            continue
+
+        try:
+            zenith, azimuth = parser(meta_path)
+        except Exception as e:
+            logger.warning(f"Failed to parse sun angles for {scene_id}: {e}")
+            n_failed += 1
+            continue
+
+        processing_info.loc[scene_id, 'sun_zenith'] = zenith
+        processing_info.loc[scene_id, 'sun_azimuth'] = azimuth
+        n_ok += 1
+
+    logger.info(
+        f"Sun angles: {n_ok} extracted, {n_missing} missing, {n_failed} failed "
+        f"-> {processing_info_path}"
+    )
+    pd.to_pickle(processing_info, processing_info_path)
+    return processing_info
 
 def write_stack(
     row_id: str,
@@ -513,6 +622,102 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
 
         return sd
 
+def download_dem(params: Parameters, dem_params: DEMParams):
+    """Downloads and mosaics Copernicus DEM GLO-30 for the current bounds
+
+    Unlike download_landsat/download_sentinel2, this has no time
+    dimension to iterate -- it produces a single static mosaic clipped
+    and resampled to the cell's grid, so it bypasses write_time_stack.
+    """
+    with rio.Env(AWS_NO_SIGN_REQUEST='YES'):
+        data, _ = open_stac(
+            stac_catalog=dem_params.stac_catalog,
+            bounds=params.bounds,
+            proj_bounds=None if params.original_crs == pyproj.CRS.from_epsg(4326) else params.proj_bounds,
+            collection=dem_params.collection,
+            start_date=dem_params.start_date, 
+            end_date=dem_params.end_date,
+            bands=dem_params.bands,
+            bounds_query=params.bounds_query,
+            resolution=dem_params.resolution,
+            epsg=dem_params.epsg,
+            resampling=dem_params.resampling,
+            out_path=dem_params.out_path,
+            max_items=None
+        )
+
+        if data is None:
+            logger.warning('No Copernicus DEM tiles were found for this cell')
+            return None
+
+        stack_dim = 'time' if 'time' in data.dims else None  ## if None throws an error, just pass in generous time bounds
+        if stack_dim and data.sizes.get(stack_dim, 1) > 1:
+            logger.info(f'Cell spans {data.sizes[stack_dim]} DEM tiles; mosaicking')
+            data = data.mean(dim=stack_dim, skipna=True)
+        ## skip na should work because Copernicus DEM tiles are seamless and non-overlapping
+        elif stack_dim:
+            data = data.squeeze(stack_dim, drop=True)
+            ## noData for Copernicus DEM is -9999. Fill area outside DEM to -9999 first so mosaic works smoothly.
+            data = data.fillna(-9999)
+            data = data.gw.assign_nodata_attrs(-9999)
+
+            dem_out = dem_params.out_path / 'dem.tif'
+            data.gw.save(dem_out, overwrite=True, compression='lzw')
+    
+    logger.info(f'Saved DEM mosaic to {dem_out}')
+
+    return dem_out
+
+def download_metadata_only(params: Parameters, sensor_params: SensorParams, id_col_date_pos: int) -> pd.DataFrame:
+    """Downloads only the extra metadata assets (no pixel data) for scenes matching the current bounds/date range.
+    """
+    kwargs = dict(
+        stac_catalog=sensor_params.stac_catalog,
+        bounds=params.bounds,
+        proj_bounds=None if params.original_crs == pyproj.CRS.from_epsg(4326) else params.proj_bounds,
+        collection=sensor_params.collection,
+        bounds_query=params.bounds_query,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        cloud_cover_perc=params.cloud_cover_perc,
+        chunksize=params.chunksize,
+        resolution=sensor_params.resolution,
+        epsg=sensor_params.epsg,
+        resampling=sensor_params.resampling,
+        extra_assets=sensor_params.extra_assets,
+        out_path=sensor_params.out_path,
+        max_items=params.max_items,
+    )
+
+    try:
+        # Preferred: never fetch pixel data at all
+        data, df = open_stac(bands=[sensor_params.bands[0]], compute=False, **kwargs)
+    except TypeError:
+        # Fallback for geowombat versions without `compute`
+        logger.warning("open_stac() in this geowombat version has no 'compute' arg; "
+                        "falling back to a single minimal band instead of a lazy skip.")
+        logger.info(f'getting metadata from {sensor_params.stac_catalog}' )
+        data, df = open_stac(bands=[sensor_params.bands[0]], **kwargs)
+
+    if df is None or df.empty:
+        logger.warning('No metadata found for this cell/date range')
+        return pd.DataFrame()
+
+    extract_sun_angles(
+        processing_info_path=params.out_path / 'processing.info',
+        scene_info_path=SensorPaths(out_path=params.out_path).sentinel2 / 'scene.info',
+        sensor='S2',
+        metadata_col='granule_metadata',
+    )
+    extract_sun_angles(
+        processing_info_path=params.out_path / 'processing.info',
+        scene_info_path=SensorPaths(out_path=params.out_path).landsat / 'scene.info',
+        sensor='L',
+        metadata_col='mtl.xml',
+    )
+
+    logger.info(f"updated processing info: {pd.read_pickle(params.out_path / 'processing.info').head()}")
+
 
 def download_data(args):
     params = Parameters(
@@ -531,110 +736,143 @@ def download_data(args):
         view_asset_keys=args.view_asset_keys,
         max_items=None if args.max_items == -1 else args.max_items,
         errors_only=args.errors_only,
+        metadata_only=args.metadata_only,
+        sensors=args.sensors,
         l7_stop_year=args.l7_stop_year
     )
 
-    processing_info_path = params.out_path/ 'processing.info'
-    if processing_info_path.is_file():
-        processing_dict = pd.read_pickle(processing_info_path).to_dict(orient='index')
+    if 'L' in params.sensors:
+        ## Set Landsat Settings:
+        landsat_params = LandsatParams(
+            out_path=SensorPaths(out_path=params.out_path).landsat,
+            epsg=params.epsg,
+            resolution=params.resolution
+        )
 
-    else:
-        processing_dict = {}
-        if os.path.exists(params.out_path/'landsat'):
-            landsat_files = [fi for fi in os.listdir(params.out_path/'landsat') if fi.endswith('.tif')]
-            if len(landsat_files) > 0:
-                for f in landsat_files:
-                    processing_dict[os.path.splitext(f)[0]]={
-                        'dl':params.out_path/'landsat/{}'.format(f),
-                        'beforeDB':True,
-                        'redownload':False,
-                        'skip':False
-                        }
-        if os.path.exists(params.out_path/'sentinel2'):
-            sentinel2_files = [fi for fi in os.listdir(params.out_path/'sentinel2') if fi.endswith('.tif')]
-            if len(sentinel2_files) > 0:
-                for s in sentinel2_files:
-                    processing_dict[os.path.splitext(s)[0]]={
-                        'dl':params.out_path/'sentinel2/{}'.format(s),
-                        'beforeDB':True,
-                        'redownload':False,
-                        'skip':False}
-        # Write new processing database
-        if not os.path.exists(params.out_path):
-            os.makedirs(params.out_path)
-        new_processing_info = pd.DataFrame.from_dict(processing_dict,orient='index')
-        new_processing_info.rename_axis('id', axis=1, inplace=True)
-        pd.to_pickle(new_processing_info, processing_info_path)
-        
-    logger.info(f'\n {len(processing_dict)} images already downloaded (or looked at and skipped) \n')
+    if 'S2' in params.sensors:
+        ## Set Sentinel-2 Settings:
 
-    # Download Landsat
-    landsat_params = LandsatParams(
-        out_path=SensorPaths(out_path=params.out_path).landsat,
-        epsg=params.epsg,
-        resolution=params.resolution
-    )
-    landsatdl = download_landsat(params, landsat_params)
-
-    if landsatdl[0] == 0:
-        logger.warning('There are no Landsat images for this period')
-        num_new_landsat = 0
-
-    else:    
-        num_new_landsat= sum(1 for e in landsatdl[1] if e)
-        if num_new_landsat > 0:
-            if len(processing_dict) ==  0:
-                processing_dict = next((e for e in landsatdl[1] if e),{})
-            for d in filter(None,landsatdl[1]):
-                processing_dict.update(d)
-                
-    # Download Sentinel-2
-
-    if params.stac_cat in ['microsoft_v1', 'element84_v0']:
-        bands =[
-        Sentinel2Bands_v0.blue.value,
-        Sentinel2Bands_v0.green.value,
-        Sentinel2Bands_v0.red.value,
-        Sentinel2Bands_v0.nir.value,
-        Sentinel2Bands_v0.swir1.value,
-        Sentinel2Bands_v0.swir2.value,
-        Sentinel2Bands_v0.scl.value
-        ]
-        if params.stac_cat == 'microsoft_v1':
-            extra_assets = ['granule-metadata']
-            stac_catalog = 'microsoft_v1'
+        if params.stac_cat in ['microsoft_v1', 'element84_v0']:
+            bands =[
+            Sentinel2Bands_v0.blue.value,
+            Sentinel2Bands_v0.green.value,
+            Sentinel2Bands_v0.red.value,
+            Sentinel2Bands_v0.nir.value,
+            Sentinel2Bands_v0.swir1.value,
+            Sentinel2Bands_v0.swir2.value,
+            Sentinel2Bands_v0.scl.value
+            ]
+            if params.stac_cat == 'microsoft_v1':
+                extra_assets = ['granule-metadata']
+                stac_catalog = 'microsoft_v1'
+            else:
+                extra_assets = ['metadata']
+                stac_catalog = 'element84_v0'
         else:
-            extra_assets = ['metadata']
-            stac_catalog = 'element84_v0'
-    else:
-        stac_catalog = 'element84_v1'
-        extra_assets = ['granule_metadata']
-        bands =[
-        Sentinel2Bands.blue.value,
-        Sentinel2Bands.green.value,
-        Sentinel2Bands.red.value,
-        Sentinel2Bands.nir.value,
-        Sentinel2Bands.swir1.value,
-        Sentinel2Bands.swir2.value,
-        Sentinel2Bands.scl.value
-        ]
+            stac_catalog = 'element84_v1'
+            extra_assets = ['granule_metadata']
+            bands =[
+            Sentinel2Bands.blue.value,
+            Sentinel2Bands.green.value,
+            Sentinel2Bands.red.value,
+            Sentinel2Bands.nir.value,
+            Sentinel2Bands.swir1.value,
+            Sentinel2Bands.swir2.value,
+            Sentinel2Bands.scl.value
+            ]
         
-    sentinel2_params = Sentinel2Params(
-        out_path=SensorPaths(out_path=params.out_path).sentinel2,
-        epsg=params.epsg,
-        resolution=params.resolution,
-        stac_catalog=stac_catalog,
-        extra_assets=extra_assets,
-        bands=bands
-    )
-    sentdl = download_sentinel2(params, sentinel2_params)
-    num_new_sentinel = sum(1 for e in sentdl if e)
-    if num_new_sentinel > 0:
-        for d in filter(None,sentdl):
-            processing_dict.update(d)
+        sentinel2_params = Sentinel2Params(
+            out_path=SensorPaths(out_path=params.out_path).sentinel2,
+            epsg=params.epsg,
+            resolution=params.resolution,
+            stac_catalog=stac_catalog,
+            extra_assets=extra_assets,
+            bands=bands
+        )
+        
+    if params.metadata_only:
+        logger.info('downloading only metadata')
+        if 'L' in params.sensors:
+            download_metadata_only(params, landsat_params, id_col_date_pos=3)
+            
+        if 'S2' in params.sensors:
+            download_metadata_only(params, sentinel2_params, id_col_date_pos=2)
+        return  # skip the rest of the imagery download path
+    
+    if 'DEM' in params.sensors:
+        dem_out_path = SensorPaths(out_path=params.out_path).dem
+        dem_path = dem_out_path / 'dem.tif'
+        if not dem_path.is_file():
+            dem_params = DEMParams(
+                out_path=dem_out_path,
+                epsg=params.epsg,
+                resolution=params.resolution
+            )
+            download_dem(params, dem_params)
+        else:
+            logger.info('using existing DEM file')
+            
+    if 'L' in params.sensors or 'S2' in params.sensors:
+        processing_info_path = params.out_path/ 'processing.info'
+        if processing_info_path.is_file():
+            processing_dict = pd.read_pickle(processing_info_path).to_dict(orient='index')
 
-    if(num_new_landsat + num_new_sentinel)>0:
-        new_processing_info = pd.DataFrame.from_dict(processing_dict,orient='index')
-        new_processing_info.rename_axis('id', axis=1, inplace=True)
-        pd.to_pickle(new_processing_info, processing_info_path)
-    logger.info(f'{num_new_landsat} Landsat images and {num_new_sentinel} Sentinel-2 images downloaded and added to database.')
+        else:
+            processing_dict = {}
+            if os.path.exists(params.out_path/'landsat'):
+                landsat_files = [fi for fi in os.listdir(params.out_path/'landsat') if fi.endswith('.tif')]
+                if len(landsat_files) > 0:
+                    for f in landsat_files:
+                        processing_dict[os.path.splitext(f)[0]]={
+                            'dl':params.out_path/'landsat/{}'.format(f),
+                            'beforeDB':True,
+                            'redownload':False,
+                            'skip':False
+                            }
+            if os.path.exists(params.out_path/'sentinel2'):
+                sentinel2_files = [fi for fi in os.listdir(params.out_path/'sentinel2') if fi.endswith('.tif')]
+                if len(sentinel2_files) > 0:
+                    for s in sentinel2_files:
+                        processing_dict[os.path.splitext(s)[0]]={
+                            'dl':params.out_path/'sentinel2/{}'.format(s),
+                            'beforeDB':True,
+                            'redownload':False,
+                            'skip':False}
+            # Write new processing database
+            if not os.path.exists(params.out_path):
+                os.makedirs(params.out_path)
+            new_processing_info = pd.DataFrame.from_dict(processing_dict,orient='index')
+            new_processing_info.rename_axis('id', axis=1, inplace=True)
+            pd.to_pickle(new_processing_info, processing_info_path)
+        
+        logger.info(f'\n {len(processing_dict)} images already downloaded (or looked at and skipped) \n')
+
+    if 'L' in params.sensors:
+        ## Download Landsat
+        landsatdl = download_landsat(params, landsat_params)
+
+        if landsatdl[0] == 0:
+            logger.warning('There are no Landsat images for this period')
+            num_new_landsat = 0
+
+        else:    
+            num_new_landsat= sum(1 for e in landsatdl[1] if e)
+            if num_new_landsat > 0:
+                if len(processing_dict) ==  0:
+                    processing_dict = next((e for e in landsatdl[1] if e),{})
+                for d in filter(None,landsatdl[1]):
+                    processing_dict.update(d)
+
+    if 'S2' in params.sensors:
+        ## Download Sentinel-2
+        sentdl = download_sentinel2(params, sentinel2_params)
+        num_new_sentinel = sum(1 for e in sentdl if e)
+        if num_new_sentinel > 0:
+            for d in filter(None,sentdl):
+                processing_dict.update(d)
+
+        if(num_new_landsat + num_new_sentinel)>0:
+            new_processing_info = pd.DataFrame.from_dict(processing_dict,orient='index')
+            new_processing_info.rename_axis('id', axis=1, inplace=True)
+            pd.to_pickle(new_processing_info, processing_info_path)
+        logger.info(f'{num_new_landsat} Landsat images and {num_new_sentinel} Sentinel-2 images downloaded and added to database.')

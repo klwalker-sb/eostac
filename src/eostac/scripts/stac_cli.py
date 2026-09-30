@@ -99,11 +99,25 @@ def main():
                     help='The position of the extra progress bar (default: %(default)s)',
                     type=int, default=1
                 )
+                
                 subparser.add_argument(
                     '--errors-only', dest='errors_only',
                     help='Whether to only check and download errors (default: %(default)s)',
                     action='store_true'
                 )
+                
+                subparser.add_argument(
+                    '--metadata-only', dest='metadata_only',
+                    help='Whether to only download the metadata and not the actual rasters (default: %(default)s)',
+                    action='store_true'
+                )
+                
+                subparser.add_argument(
+                    '--sensors', dest='sensors',
+                    help='Sensors to download. L=Landsat, S2=Sentinel2, LS2=both. DEM=Copernicus DEM',
+                    default='LS2'
+                )
+                    
                 subparser.add_argument(
                     '--l7-stop_year', dest='l7_stop_year',
                     help='Year for which to stop downloading images from Landsat7 (default: %(default)s)',

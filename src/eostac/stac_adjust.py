@@ -68,7 +68,7 @@ def adjust_data(args):
     ## if --regress flag not included, just downloads data for sample points
     if not args.regress:
         with tempfile.TemporaryDirectory() as tmp:
-            points_file = Path(f'{args.out_path}/'points.gpkg'
+            points_file = Path(args.out_path) / 'points.gpkg'
             df.to_file(points_file)
             for row in tqdm(df.itertuples(), total=len(df.index), position=0, desc='Sample'):
                 id_path = str(Path(args.out_path) / f"{getattr(row, UniqueIdentifers.unique_id.value):06d}")
