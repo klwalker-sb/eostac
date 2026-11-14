@@ -1,5 +1,8 @@
+import contextlib
 from pathlib import Path
+import re
 import enum
+import math
 import typing as T
 from abc import ABC
 import rasterio as rio
@@ -20,6 +23,7 @@ from .utils import TqdmParallel, set_color_logger
 
 import geowombat as gw
 from geowombat.core.stac import open_stac
+from geowombat.radiometry import QABits
 
 import pandas as pd
 import geopandas as gpd
@@ -53,10 +57,22 @@ def _safe_download_worker(item, extra, out_path):
 
 _gwstac._download_worker = _safe_download_worker
 
+@contextlib.contextmanager
+def _no_stac_scaling():
+    """open_stac rescales every band to reflectance and clips to 0-1
+    if the qa mask is desired, it will turn into garbage without this patch"""
+    original = _gwstac.STAC_SCALING
+    _gwstac.STAC_SCALING = {}
+    try:
+        yield
+    finally:
+        _gwstac.STAC_SCALING = original
+        
 @attr.s
 class Parameters(object):
     """General parameters
     """
+    proj_ver: str = attr.ib(default=None)
     bounds: T.Union[str, Path, T.Sequence[float]] = attr.ib(default=None)
     bounds_query: str = attr.ib(default=None)
     bounds_buffer: float = attr.ib(default=0, converter=float)
@@ -78,6 +94,12 @@ class Parameters(object):
     sensors: str = attr.ib(default='LS2')
     l7_stop_year: int = attr.ib(default=2020)
     stac_cat: str = attr.ib(default=None)
+    not_masked: bool = attr.ib(default=False)
+    get_masks: bool = attr.ib(default=False)
+    mask_suffix: str = attr.ib(default='_mask')
+    mask_dir: str = attr.ib(default=None)
+    buffer_extra: int = attr.ib(default=0)
+    mask_resolution: float = attr.ib(default=0, converter=float)
 
     def __attrs_post_init__(self):
         # Open a file if passed as a path
@@ -112,6 +134,7 @@ class SensorParams(ABC):
     resampling: Resampling
     extra_assets: T.List[str]
     out_path: Path
+    date_pos: int
 
 
 @attr.s
@@ -135,6 +158,7 @@ class LandsatParams(SensorParams):
     resampling: Resampling = attr.ib(default=Resampling.cubic)
     extra_assets: T.List[str] = attr.ib(default=['ang', 'mtl.txt', 'mtl.xml'])
     out_path: Path = attr.ib(default='.')
+    date_pos: int = attr.ib(default=3)
 
     def __attrs_post_init__(self):
         self.out_path.mkdir(parents=True, exist_ok=True)
@@ -161,6 +185,7 @@ class Sentinel2Params(SensorParams):
     resampling: Resampling = attr.ib(default=Resampling.cubic)
     extra_assets: T.List[str] = attr.ib(default=['granule_metadata'])
     out_path: Path = attr.ib(default='.')
+    date_pos: int = attr.ib(default=2)
 
     def __attrs_post_init__(self):
         self.out_path.mkdir(parents=True, exist_ok=True)
@@ -203,9 +228,28 @@ class S2SceneClassificationLegend(enum.Enum):
 
 #S2CLOUDLESS_BAND_NAMES = ['coastal', 'blue', 'red', 'nir1', 'nir', 'rededge', 'water', 'cirrus', 'swir1', 'swir2']
 #S2CLOUDLESS_BANDS = [getattr(Sentinel2Bands, band).value for band in S2CLOUDLESS_BAND_NAMES]
+S2_BAD_SCL = [
+    S2SceneClassificationLegend.saturated_or_defective.value,
+    S2SceneClassificationLegend.dark_area_pixels.value,
+    S2SceneClassificationLegend.cloud_shadows.value,
+    S2SceneClassificationLegend.cloud_medium_probability.value,
+    S2SceneClassificationLegend.cloud_high_probability.value,
+    S2SceneClassificationLegend.thin_cirrus.value,
+    S2SceneClassificationLegend.snow_ice.value,
+]
+
 S2_VIS_BAND_NAMES = ['blue', 'green', 'red']
 S2_VIS_BANDS = [getattr(Sentinel2Bands, band).value for band in S2_VIS_BAND_NAMES]
+S2_BAND_ORDER = ('blue', 'green', 'red', 'nir', 'swir1', 'swir2', 'scl')       # scl must stay last (download_masks)
+S2_CATALOGS = {   # --stac-cat value: (band enum, extra metadata asset)
+    'element84_v1': (Sentinel2Bands, ['granule_metadata']),
+    'element84_v0': (Sentinel2Bands_v0, ['metadata']),
+    'microsoft_v1': (Sentinel2Bands_v0, ['granule-metadata']),
+}
 
+LANDSAT_MASK_ITEMS = ['fill', 'dilated_cloud', 'cirrus', 'cloud', 'cloud_shadow', 'snow']  ## can drop what we don't want here
+#LANDSAT_QA_BITS = {'fill': 0, 'dilated_cloud': 1, 'cirrus': 2, 'cloud': 3, 'cloud_shadow': 4, 'snow': 5, 'clear': 6, 'water': 7}
+LANDSAT_QA_BITS = QABits.landsat_c2_l2.value
 
 def s2_l2a_clouds(data: xr.DataArray) -> xr.DataArray:
     """Data masker for Sentinel-2 Level 2A
@@ -247,7 +291,21 @@ def s2_l2a_clouds(data: xr.DataArray) -> xr.DataArray:
 #         stack_dims=('y', 'x', 'time'), direction='stack'
 #     ).fit_transform(data_cloudless)
 
+SENTINEL2_ID_PATTERN = re.compile(r'^(?P<base>.+)_(?P<idx>\d+)_(?P<suffix>L2A)$')
 
+def _sibling_scene_id(scene_id: str, new_idx: str = '0') -> T.Optional[str]:
+    '''
+    Sentinel-2 scene ids here follow {base}_{idx}_L2A, where idx
+    disambiguates multiple catalog entries for the same tile/date
+    (e.g. a legacy-baseline item alongside a Collection-1 reprocessed
+    one). Returns the same id with idx replaced by new_idx, or None
+    if scene_id doesn't match that pattern or is already new_idx.
+    '''
+    m = SENTINEL2_ID_PATTERN.match(scene_id)
+    if not m or m.group('idx') == new_idx:
+        return None
+    return f"{m.group('base')}_{new_idx}_{m.group('suffix')}"
+    
 def get_landsat_sun_angles(mtl_xml_path: T.Union[str, Path]) -> T.Tuple[float, float]:
     """Returns (sun_zenith, sun_azimuth) in degrees from a Landsat Collection 2 MTL.xml file.
     """
@@ -283,6 +341,12 @@ def extract_sun_angles(
     processing_info = pd.read_pickle(processing_info_path)
     scene_info = pd.read_pickle(scene_info_path)
 
+    if metadata_col not in scene_info.columns:
+        alt = next((c for c in ('granule_metadata', 'granule-metadata', 'metadata', 'mtl.xml') if c in scene_info.columns), None)
+        if alt is None:
+            raise KeyError(f'no metadata column ({metadata_col!r} or an alternative) in {scene_info_path}')
+        metadata_col = alt
+      
     for col in ('sun_zenith', 'sun_azimuth'):
         if col not in processing_info.columns:
             processing_info[col] = pd.NA
@@ -306,6 +370,25 @@ def extract_sun_angles(
         try:
             zenith, azimuth = parser(meta_path)
         except Exception as e:
+            ## can get angles from sibling file (same acquisition from a different collection)
+            sibling_id = _sibling_scene_id(scene_id, new_idx='0') if sensor == 'S2' else None
+            sibling_match = scene_info.loc[scene_info['id'] == sibling_id] if sibling_id else None
+
+            if sibling_match is not None and not sibling_match.empty:
+                sibling_meta_path = sibling_match.iloc[0][metadata_col]
+                try:
+                    zenith, azimuth = parser(sibling_meta_path)
+                    logger.info(
+                        f"{scene_id} metadata failed to parse ({e}); "
+                        f"used sibling {sibling_id}'s sun angles instead"
+                    )
+                    processing_info.loc[scene_id, 'sun_zenith'] = zenith
+                    processing_info.loc[scene_id, 'sun_azimuth'] = azimuth
+                    #processing_info.loc[scene_id, 'sun_angle_source'] = sibling_id
+                    n_ok += 1
+                    continue
+                except Exception as e2:
+                    logger.warning(f"Sibling {sibling_id} also failed to parse: {e2}")
             logger.warning(f"Failed to parse sun angles for {scene_id}: {e}")
             n_failed += 1
             continue
@@ -344,7 +427,7 @@ def write_stack(
     # only download images that don't already exist in directory/database:
     process_this = True
     if row_id in processing_db.index:
-        if processing_db.at[row_id,'redownload'] == True:
+        if (processing_db.at[row_id,'redownload'] in ('True', 'TRUE')) or (processing_db.at[row_id,'redownload'] is True):
             logger.info(f'reprocessing {row_id}')
             #pass
         else:
@@ -449,7 +532,7 @@ def write_time_stack(
         df['error_file_exists'] = df.error_file.apply(lambda x: x.is_file())
         df = df.loc[df.error_file_exists]
         if df.empty:
-            return
+            return []
 
     data = (
         data
@@ -466,6 +549,7 @@ def write_time_stack(
     #     data.load(num_workers=threads_per_worker)
 
     if n_workers == 1:
+        results = []
         for row in tqdm(
             df.sort_values('date').itertuples(),
             position=tqdm_extra_position,
@@ -479,6 +563,7 @@ def write_time_stack(
                 tqdm_extra_position,
                 l7_stop_year
             )
+            results.append(pdic)
 
     else:
         data_gen = (
@@ -492,6 +577,7 @@ def write_time_stack(
             ) for row in df.sort_values('date').itertuples()
         )
 
+        results = []
         try:
             with parallel_backend(
                 backend='loky',
@@ -513,10 +599,98 @@ def write_time_stack(
             pass
 
     return results
-        
+
+def fetch_mask_stack(params, sensor_params, mask_band, nodata, dtype, buffer_extra=0.0, resolution=None):
+    """
+    Nearest-neighbour, unscaled QA/SCL stack on the same grid as the images if desired (<buffer_extra> = 0)
+        If <buffer_extra> > 0: the extent grows by buffer_extra metres on every side, so it no longer matches the image grid
+            This is so that clouds just off the edge of the grid cell can have their shadows cast on the cell when masking
+            (if used, the shadow step needs to resample onto the cell's grid, which it does in tstuyau). 
+        <resolution> (m) can be used to override the sensor's resolution
+    """
+    
+    bounds = params.bounds                       # lat/lon search bounds (left, bottom, right, top), degrees
+    proj_bounds = None if params.original_crs == pyproj.CRS.from_epsg(4326) else params.proj_bounds   # metres
+    if buffer_extra > 0:
+        crs = params.original_crs
+        dist = buffer_extra / 111320.0 if crs.is_geographic else float(buffer_extra)   # metres -> CRS units
+        # same square, mitred buffer Parameters uses, done in the original CRS and brought back to lat/lon
+        grown = bounds.to_crs(crs).buffer(dist, cap_style=CAP_STYLE.square, join_style=JOIN_STYLE.mitre)
+        bounds = bounds.assign(geometry=grown.to_crs('epsg:4326'))
+        if proj_bounds is not None:
+            proj_bounds = [proj_bounds[0] - dist, proj_bounds[1] - dist, proj_bounds[2] + dist, proj_bounds[3] + dist]
+            
+    with _no_stac_scaling():
+        data, _ = open_stac(
+            stac_catalog=sensor_params.stac_catalog,
+            bounds=bounds,
+            proj_bounds=proj_bounds,
+            collection=sensor_params.collection,
+            bands=[mask_band],
+            cloud_cover_perc=params.cloud_cover_perc,
+            chunksize=params.chunksize,
+            start_date=params.start_date,
+            end_date=params.end_date,
+            bounds_query=params.bounds_query,
+            mask_data=False,
+            resolution=sensor_params.resolution if resolution is None else resolution,
+            epsg=sensor_params.epsg,
+            resampling=Resampling.nearest,
+            max_items=params.max_items,
+        )
+    if data is None:
+        return None
+    return (
+        data.fillna(nodata).astype(dtype)
+        .gw.assign_nodata_attrs(nodata)
+        .assign_attrs(crs=data.gw.crs_to_pyproj.to_wkt())
+    )
+
+def _bad_to_dataarray(bad, data):
+    return xr.DataArray(bad, dims=('time', 'y', 'x'),
+                        coords={'time': data.time, 'y': data.y, 'x': data.x})
+
+def _align_to_images(mask, data):
+    """Reorder the mask's time axis to match the image stack, by scene id."""
+    mask_ids = mask.id.values.tolist()
+    order = [mask_ids.index(i) for i in data.id.values.tolist()]
+    mask = mask.isel(time=order, band=0)
+    if mask.shape != (data.sizes['time'], data.sizes['y'], data.sizes['x']):
+        raise RuntimeError('Mask grid does not match image grid')
+    return mask
+
+def apply_landsat_qa_mask(data, params, landsat_params, items=LANDSAT_MASK_ITEMS):
+    qa = fetch_mask_stack(params, landsat_params, LandsatBands.qa.value, nodata=1, dtype='uint16')
+    if qa is None:
+        raise RuntimeError('Could not fetch Landsat QA for masking')
+    bitmask = sum(1 << LANDSAT_QA_BITS[i] for i in items)
+    qa = _align_to_images(qa, data)
+    bad = _bad_to_dataarray((qa.data & bitmask) != 0, data)
+    return data.where(~bad).assign_attrs(**data.attrs)
+
+
+def apply_s2_scl_mask(data, params, s2_params):
+    scl = fetch_mask_stack(params, s2_params, s2_params.bands[-1], nodata=0, dtype='uint8')
+    if scl is None:
+        raise RuntimeError('Could not fetch Sentinel-2 SCL for masking')
+    scl = _align_to_images(scl, data)
+    arr = scl.data
+    bad = arr == S2_BAD_SCL[0]
+    for v in S2_BAD_SCL[1:]:
+        bad = bad | (arr == v)
+    bad = _bad_to_dataarray(bad, data)
+    return xr.where(bad, NODATA, data).assign_attrs(**data.attrs)
+
 def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
     """Downloads Landsat data
     """
+    ### Note for legacy: Py crop maps version 0 & 1 used option to apply qa mask directly to data in geowombat.
+    ##   this incorrectly masks clear pixels because cubic convolution is incorrectly applied to the mask.
+    ##   for other versions and projects, we apply the masks separately using the methods here, so the mask_data parameter in
+    ##   geowombat open_stac is set to False.
+    apply_masks = False
+    if params.proj_ver in ['Py_0','Py_1','Py0','Py1']:
+        apply_masks = True
     data, df = open_stac(
         stac_catalog=landsat_params.stac_catalog,
         bounds=params.bounds,
@@ -527,7 +701,7 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
         chunksize=params.chunksize,
         start_date=params.start_date,
         end_date=params.end_date,
-        mask_data=landsat_params.mask_data,
+        mask_data=apply_masks,
         resolution=landsat_params.resolution,
         epsg=landsat_params.epsg,
         view_asset_keys=params.view_asset_keys,
@@ -538,40 +712,45 @@ def download_landsat(params: Parameters, landsat_params: LandsatParams) -> int:
     )
     if data is None:
         return 0,[]
-    else:
-        data = data.assign_coords(band=[LandsatBands(band).name for band in data.band.values])
-        data = data.assign_attrs(scene_ids=df.id.values.tolist())
+    if landsat_params.mask_data:
+        data = apply_landsat_qa_mask(data, params, landsat_params)
+    data = data.assign_coords(band=[LandsatBands(band).name for band in data.band.values])
+    data = data.assign_attrs(scene_ids=df.id.values.tolist())
 
-        # Save the scene info
-        scene_info = landsat_params.out_path / 'scene.info'
-        df, df_download = pickle_scene_info(df, date_pos=3, scene_info=scene_info)
+    # Save the scene info
+    scene_info = landsat_params.out_path / 'scene.info'
+    df, df_download = pickle_scene_info(df, date_pos=3, scene_info=scene_info)
 
-        # Write each date to file
-        ld = write_time_stack(
-            data,
-            landsat_params.out_path,
-            n_workers=params.n_workers,
-            threads_per_worker=params.threads_per_worker,
-            df=df_download,
-            tqdm_extra_position=params.tqdm_extra_position,
-            desc='Landsat scenes',
-            chunks=params.chunksize,
-            errors_only=params.errors_only,
-            l7_stop_year=params.l7_stop_year
-        )
+    # Write each date to file
+    ld = write_time_stack(
+        data,
+        landsat_params.out_path,
+        n_workers=params.n_workers,
+        threads_per_worker=params.threads_per_worker,
+        df=df_download,
+        tqdm_extra_position=params.tqdm_extra_position,
+        desc='Landsat scenes',
+        chunks=params.chunksize,
+        errors_only=params.errors_only,
+        l7_stop_year=params.l7_stop_year
+    )
 
-        return int(data.epsg.values), ld
+    return int(data.epsg.values), ld
 
 
 def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
     """Downloads Sentinel-2 data
     """
+    mask_band = sentinel2_params.bands[-1]
+    bands = ([b for b in sentinel2_params.bands if b != mask_band]
+         if (params.not_masked) else sentinel2_params.bands)
+
     data, df = open_stac(
         stac_catalog=sentinel2_params.stac_catalog,
         bounds=params.bounds,
         proj_bounds=None if params.original_crs == pyproj.CRS.from_epsg(4326) else params.proj_bounds,
         collection=sentinel2_params.collection,
-        bands=sentinel2_params.bands,
+        bands=bands,
         cloud_cover_perc=params.cloud_cover_perc,
         chunksize=params.chunksize,
         start_date=params.start_date,
@@ -587,13 +766,17 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
     )
     if data is None:
         return []
-    else:
-        s2_bands = [Sentinel2Bands(band).name for band in data.band.values]
-        data = data.assign_coords(band=s2_bands)
-        data = data.assign_attrs(scene_ids=df.id.values.tolist())
 
-        # Mask clouds using the ESA sen2cor scene classification layer
+    band_enum = S2_CATALOGS[sentinel2_params.stac_catalog][0]
+    s2_bands = [band_enum(band).name for band in data.band.values]
+    data = data.assign_coords(band=s2_bands)
+    data = data.assign_attrs(scene_ids=df.id.values.tolist())
+
+    ## Mask clouds using the ESA sen2cor scene classification layer -- only for legacy because this incorrectly applies
+    ##  cubic convolution to mask. Correct method applies masks outside geowombat
+    if params.proj_ver in ['Py_0','Py_1','Py0','Py1']:
         data_s2_cloud_mask = s2_l2a_clouds(data)
+
         data = (
             (
                 xr.where(data_s2_cloud_mask == NODATA, NODATA, data)
@@ -602,25 +785,28 @@ def download_sentinel2(params: Parameters, sentinel2_params: Sentinel2Params):
             .assign_attrs(**data.attrs)
         )
 
-        # Save the scene info
-        scene_info = sentinel2_params.out_path / 'scene.info'
-        df, df_download = pickle_scene_info(df, date_pos=2, scene_info=scene_info)
+    if not params.not_masked:
+        data = apply_s2_scl_mask(data, params, sentinel2_params)
+    
+    # Save the scene info
+    scene_info = sentinel2_params.out_path / 'scene.info'
+    df, df_download = pickle_scene_info(df, date_pos=2, scene_info=scene_info)
 
-        # Write each date to file
-        sd = write_time_stack(
-            data,
-            sentinel2_params.out_path,
-            n_workers=params.n_workers,
-            threads_per_worker=params.threads_per_worker,
-            df=df_download,
-            tqdm_extra_position=params.tqdm_extra_position,
-            desc='Sentinel-2 scenes',
-            chunks=params.chunksize,
-            errors_only=params.errors_only,
-            l7_stop_year=params.l7_stop_year
-        )
+    # Write each date to file
+    sd = write_time_stack(
+        data,
+        sentinel2_params.out_path,
+        n_workers=params.n_workers,
+        threads_per_worker=params.threads_per_worker,
+        df=df_download,
+        tqdm_extra_position=params.tqdm_extra_position,
+        desc='Sentinel-2 scenes',
+        chunks=params.chunksize,
+        errors_only=params.errors_only,
+        l7_stop_year=params.l7_stop_year
+    )
 
-        return sd
+    return sd
 
 def download_dem(params: Parameters, dem_params: DEMParams):
     """Downloads and mosaics Copernicus DEM GLO-30 for the current bounds
@@ -653,16 +839,18 @@ def download_dem(params: Parameters, dem_params: DEMParams):
         stack_dim = 'time' if 'time' in data.dims else None  ## if None throws an error, just pass in generous time bounds
         if stack_dim and data.sizes.get(stack_dim, 1) > 1:
             logger.info(f'Cell spans {data.sizes[stack_dim]} DEM tiles; mosaicking')
-            data = data.mean(dim=stack_dim, skipna=True)
-        ## skip na should work because Copernicus DEM tiles are seamless and non-overlapping
+            attrs = data.attrs.copy()   ## .max() / .mean(), etd drop attrs, so will need this later 
+            ## skip na should work because Copernicus DEM tiles are seamless and non-overlapping
+            data = data.max(dim=stack_dim, skipna=True)
+            data = data.assign_attrs(attrs)
+        
         elif stack_dim:
             data = data.squeeze(stack_dim, drop=True)
-            ## noData for Copernicus DEM is -9999. Fill area outside DEM to -9999 first so mosaic works smoothly.
-            data = data.fillna(-9999)
-            data = data.gw.assign_nodata_attrs(-9999)
 
-            dem_out = dem_params.out_path / 'dem.tif'
-            data.gw.save(dem_out, overwrite=True, compression='lzw')
+        data = data.fillna(-9999)
+        data = data.gw.assign_nodata_attrs(-9999)
+        dem_out = dem_params.out_path / 'dem.tif'
+        data.squeeze().gw.save(dem_out, overwrite=True, compression='lzw')
     
     logger.info(f'Saved DEM mosaic to {dem_out}')
 
@@ -718,9 +906,90 @@ def download_metadata_only(params: Parameters, sensor_params: SensorParams, id_c
 
     logger.info(f"updated processing info: {pd.read_pickle(params.out_path / 'processing.info').head()}")
 
+def download_masks(params: Parameters, sensor_params:SensorParams, mask_band=None, nodata=None, dtype=None,
+                   img_dir=None, mask_path=None, buffer_extra=0, mask_suffix='_mask', mask_resolution=0.0) -> None:
+    """Saves the QA / SCL layer for every already-downloaded image for date range as <image_stem><mask_suffix>.tif in mask dir 
+    Uses nearest-neighbour resampling and no reflectance scaling, so class/bit values are preserved.
+    <mask_suffix> allows for different <mask_suffix> vals for different masks (e.g. wide and clipped), but all 
+        masks should contain _mask in the name if downloaded to the img directory to not interfere with image sorting
+    <buffer_extra>(m) allows extra buffer space (beyond normal grid buffer) so that clouds off edge can be projected 
+        onto shadows. NOTE: With <buffer_extra> > 0, the mask no longer sits on the image grid and alignment is needed in 
+        downstream methods. Likewise, <mask_resolution>(m) can be used to override the sensor's resolution for download 
+        to reduce file size (but output won't be aligned with grid). The default <mask_resolution>= 0.0 sets the mask resolution
+        to <resolution> (the main project setting) to align with other products. 
+    """
+    img_dir = Path(img_dir if img_dir is not None else sensor_params.out_path)
+    logger.info(f' masking images in {img_dir}')
+    mask_dir = img_dir if mask_path in [None, 'None', ''] else Path(mask_path)
+    logger.info(f'saving mask into {mask_dir}')
+    mask_dir.mkdir(parents=True, exist_ok=True)
+    
+    start, end = str(params.start_date).replace('-', ''), str(params.end_date).replace('-', '')
+    date_pos = sensor_params.date_pos
+    missing = sorted(
+        p for p in img_dir.glob('*.tif')
+        if '_mask' not in p.stem
+        and (date_pos is None or start <= p.stem.split('_')[date_pos][:8] <= end)
+        and not (mask_dir / f'{p.stem}{mask_suffix}.tif').is_file()
+    )
+    if not missing:
+        logger.info(f'No missing masks in {img_dir}')
+        return
+    
+    logger.info('downloading mask layers for existing images...')
+    missing_ids = {p.stem: p for p in missing}
 
+    data = fetch_mask_stack(params, sensor_params, mask_band, nodata, dtype, buffer_extra=buffer_extra,
+                            resolution=mask_resolution if mask_resolution > 0 else None)
+    
+    if data is None:
+        logger.warning(f'No scenes found when fetching masks for {img_dir} ({params.start_date} to {params.end_date})')
+        return
+
+    scene_ids = data.id.values.tolist()
+
+    for scene_id, img_path in tqdm(missing_ids.items(), desc='Masks',
+                                   position=params.tqdm_extra_position):
+        if scene_id not in scene_ids:
+            logger.warning(f'{scene_id} not returned by the mask search; skipping')
+            continue
+            
+        out_file = mask_dir / f'{scene_id}{mask_suffix}.tif'
+        
+        try:
+            m = (data.isel(time=scene_ids.index(scene_id))
+                     .transpose('band', 'y', 'x'))
+            with rio.open(img_path) as src:
+                if buffer_extra <= 0:
+                    ## sanity check: must sit on the same grid as the image
+                    if (src.height, src.width) != (m.sizes['y'], m.sizes['x']):
+                        logger.warning(f'{scene_id}: mask shape differs from image; skipping')
+                        continue
+                else:
+                    ## sanity check: the mask must contain the image (within one mask pixel)
+                    tol = abs(float(m.x[1] - m.x[0]))
+                    b = src.bounds
+                    if (float(m.x.min()) - tol > b.left or float(m.x.max()) + tol < b.right
+                        or float(m.y.min()) - tol > b.bottom or float(m.y.max()) + tol < b.top):
+                        logger.warning(f'{scene_id}: mask does not cover the image extent; skipping')
+                        continue
+
+            m.gw.save(
+                out_file,
+                overwrite=True,
+                compression='lzw',
+                num_workers=params.threads_per_worker,
+                log_progress=False,
+            )
+        except Exception as e:
+            logger.warning(f'Failed to write mask for {scene_id}: {e}')
+            if out_file.is_file():
+                out_file.unlink()
+                
+                
 def download_data(args):
     params = Parameters(
+        proj_ver=args.proj_ver,
         bounds=args.bounds,
         bounds_query=args.bounds_query,
         bounds_buffer=args.bounds_buffer,
@@ -738,58 +1007,51 @@ def download_data(args):
         errors_only=args.errors_only,
         metadata_only=args.metadata_only,
         sensors=args.sensors,
-        l7_stop_year=args.l7_stop_year
+        stac_cat=args.stac_cat,
+        l7_stop_year=args.l7_stop_year,
+        not_masked=args.not_masked,
+        get_masks=args.get_masks,
+        mask_suffix=args.mask_suffix,
+        mask_dir=args.mask_dir,
+        buffer_extra=args.buffer_extra,
+        mask_resolution = args.mask_resolution
     )
 
     if 'L' in params.sensors:
         ## Set Landsat Settings:
+        default_bands = attr.fields(LandsatParams).bands.default
+        if params.proj_ver in ['Py_0','Py_1','Py0','Py1']:
+            lbands = default_bands
+        else:
+            lbands=[b for b in default_bands if b != LandsatBands.qa.value]
+        ## by default, Landsat data has mask applied in geowombat open stac.
+        if params.not_masked:
+            masked = False
         landsat_params = LandsatParams(
             out_path=SensorPaths(out_path=params.out_path).landsat,
             epsg=params.epsg,
-            resolution=params.resolution
+            resolution=params.resolution,
+            bands=lbands,
+            mask_data=not(params.get_masks or params.not_masked),
         )
 
     if 'S2' in params.sensors:
-        ## Set Sentinel-2 Settings:
-
-        if params.stac_cat in ['microsoft_v1', 'element84_v0']:
-            bands =[
-            Sentinel2Bands_v0.blue.value,
-            Sentinel2Bands_v0.green.value,
-            Sentinel2Bands_v0.red.value,
-            Sentinel2Bands_v0.nir.value,
-            Sentinel2Bands_v0.swir1.value,
-            Sentinel2Bands_v0.swir2.value,
-            Sentinel2Bands_v0.scl.value
-            ]
-            if params.stac_cat == 'microsoft_v1':
-                extra_assets = ['granule-metadata']
-                stac_catalog = 'microsoft_v1'
-            else:
-                extra_assets = ['metadata']
-                stac_catalog = 'element84_v0'
-        else:
-            stac_catalog = 'element84_v1'
-            extra_assets = ['granule_metadata']
-            bands =[
-            Sentinel2Bands.blue.value,
-            Sentinel2Bands.green.value,
-            Sentinel2Bands.red.value,
-            Sentinel2Bands.nir.value,
-            Sentinel2Bands.swir1.value,
-            Sentinel2Bands.swir2.value,
-            Sentinel2Bands.scl.value
-            ]
-        
+        ## Set Sentinel-2 Settings (catalog chosen with --stac-cat; element84_v1 if not given)
+        stac_catalog = params.stac_cat or 'element84_v1'
+        if stac_catalog not in S2_CATALOGS:
+            raise ValueError(f'--stac-cat must be one of {list(S2_CATALOGS)}, got {stac_catalog!r}')
+        band_enum, extra_assets = S2_CATALOGS[stac_catalog]
+        logger.info(f'Sentinel-2 catalog: {stac_catalog}')
+ 
         sentinel2_params = Sentinel2Params(
             out_path=SensorPaths(out_path=params.out_path).sentinel2,
             epsg=params.epsg,
             resolution=params.resolution,
             stac_catalog=stac_catalog,
             extra_assets=extra_assets,
-            bands=bands
+            bands=[getattr(band_enum, name).value for name in S2_BAND_ORDER],
         )
-        
+
     if params.metadata_only:
         logger.info('downloading only metadata')
         if 'L' in params.sensors:
@@ -820,7 +1082,8 @@ def download_data(args):
         else:
             processing_dict = {}
             if os.path.exists(params.out_path/'landsat'):
-                landsat_files = [fi for fi in os.listdir(params.out_path/'landsat') if fi.endswith('.tif')]
+                landsat_files = [fi for fi in os.listdir(params.out_path/'landsat') 
+                                 if fi.endswith('.tif') and '_mask' not in fi]
                 if len(landsat_files) > 0:
                     for f in landsat_files:
                         processing_dict[os.path.splitext(f)[0]]={
@@ -830,7 +1093,8 @@ def download_data(args):
                             'skip':False
                             }
             if os.path.exists(params.out_path/'sentinel2'):
-                sentinel2_files = [fi for fi in os.listdir(params.out_path/'sentinel2') if fi.endswith('.tif')]
+                sentinel2_files = [fi for fi in os.listdir(params.out_path/'sentinel2') 
+                                   if fi.endswith('.tif') and '_mask' not in fi]
                 if len(sentinel2_files) > 0:
                     for s in sentinel2_files:
                         processing_dict[os.path.splitext(s)[0]]={
@@ -862,6 +1126,9 @@ def download_data(args):
                     processing_dict = next((e for e in landsatdl[1] if e),{})
                 for d in filter(None,landsatdl[1]):
                     processing_dict.update(d)
+    else:
+        num_new_landsat = 0
+        
 
     if 'S2' in params.sensors:
         ## Download Sentinel-2
@@ -870,9 +1137,41 @@ def download_data(args):
         if num_new_sentinel > 0:
             for d in filter(None,sentdl):
                 processing_dict.update(d)
+    else:
+        num_new_sentinel = 0
 
-        if(num_new_landsat + num_new_sentinel)>0:
-            new_processing_info = pd.DataFrame.from_dict(processing_dict,orient='index')
-            new_processing_info.rename_axis('id', axis=1, inplace=True)
-            pd.to_pickle(new_processing_info, processing_info_path)
+    if(num_new_landsat + num_new_sentinel)>0:
+        new_processing_info = pd.DataFrame.from_dict(processing_dict,orient='index')
+        new_processing_info.rename_axis('id', axis=1, inplace=True)
+        pd.to_pickle(new_processing_info, processing_info_path)
         logger.info(f'{num_new_landsat} Landsat images and {num_new_sentinel} Sentinel-2 images downloaded and added to database.')
+        
+    if params.get_masks:
+        if 'L' in params.sensors:
+            download_masks(
+                params,
+                landsat_params,
+                mask_band=LandsatBands.qa.value,
+                nodata=1,
+                dtype='uint16',
+                mask_suffix=params.mask_suffix,
+                img_dir=params.out_path / 'landsat',
+                mask_path= params.out_path / 'landsat' if not params.mask_dir else params.out_path/params.mask_dir,
+                buffer_extra= 0 if params.buffer_extra<=0 else params.buffer_extra,
+                mask_resolution= 30.0 if params.mask_resolution<=0.0 else params.mask_resolution
+            )
+        if 'S2' in params.sensors:
+            download_masks(
+                params,
+                sentinel2_params,
+                mask_band=sentinel2_params.bands[-1],   # scl (also correct for the v0 catalogs)
+                nodata=0,
+                dtype='uint8',
+                mask_suffix=params.mask_suffix,
+                img_dir=params.out_path / 'sentinel2',
+                mask_path= params.out_path / 'sentinel2' if not params.mask_dir else params.out_path/params.mask_dir,
+                buffer_extra = 0 if params.buffer_extra<=0 else params.buffer_extra,
+                mask_resolution=20.0 if params.mask_resolution <=0.0 else params.mask_resolution
+            )
+        
+        

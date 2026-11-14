@@ -56,6 +56,10 @@ def main():
 
             if process == Processes.download:
                 subparser.add_argument(
+                    '-pv', '--proj-ver', dest='proj_ver', help='The project version -- needed for legacy projecs Py_0 and Py_1 to maintain original behavior',
+                    default=''
+                )
+                subparser.add_argument(
                     '-b', '--bounds', dest='bounds', help='The download bounding box (default: %(default)s)'
                 )
                 subparser.add_argument(
@@ -127,6 +131,32 @@ def main():
                     '--stac-cat', dest='stac_cat',
                     help='stac catalog to download from if not default (element84_v1 for sentinel2, microsoft_v1 for landsat). Alternatives: element84_v0, microsoft_v1 (for early sentinel2)'
                 )
+                subparser.add_argument(
+                    '--not-masked', dest='not_masked',
+                    help='if False, native masks will be applied and converted to nodata value at download',
+                    action='store_true'
+                )
+                subparser.add_argument(
+                    '--get-masks', dest='get_masks',
+                    help='if True, downloads mask bands as separate file',
+                    action='store_true'
+                )
+                subparser.add_argument(
+                    '--mask-suffix', dest='mask_suffix', default='_mask',
+                    help='The suffix for the mask file (default: %(default)s)'
+                )
+                subparser.add_argument(
+                    '--buffer-extra', dest='buffer_extra', default=0, type=int,
+                    help='buffer are in meters beyond the cell for the mask (default: %(default)s)'
+                )
+                subparser.add_argument(
+                    '--mask-resolution', dest='mask_resolution', default=0.0, type=float,
+                    help='The cell resolution for the mask layer (same as resolution if 0.0). (default: %(default)s)'
+                )
+                subparser.add_argument(
+                    '--mask-dir', dest='mask_dir',
+                    help='The directory to store masks, relative to the parent of the img_dir (or img_dir if None) (default: %(default)s)'
+                )
                 
             elif process == Processes.brdf:
                 subparser.add_argument(
@@ -165,6 +195,7 @@ def main():
                     help='The processing pool size (default: %(default)s)',
                     type=int, default=10
                 )
+                
                 
             elif process == Processes.adjust:
                 subparser.add_argument(
