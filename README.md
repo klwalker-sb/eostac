@@ -1,4 +1,6 @@
 # Earth Observation STAC (eostac) processing
+Initial code from Jordan Graesser (jgrss) with contributions from Michael Mann (mmann1123) and Kendra Walker (klwalker-sb)
+Forked from https://github.com/jgrss/eostac on 8/26/2026 with local branch merged to implement edits necessary for CEL processing.
 
 ## Installation
 
@@ -11,7 +13,7 @@ pip uninstall geowombat -y
 Install `eostac`
 
 ```commandline
-git clone git@github.com:jgrss/eostac.git
+git clone git@github.com:klwalker-sb/eostac.git
 cd eostac/
 pip install .
 ```
